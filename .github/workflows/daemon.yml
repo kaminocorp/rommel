@@ -1,0 +1,53 @@
+name: daemon
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sandbox-daemon/**"
+      - "proto/schemas/**"
+      - "proto/clients/go/**"
+      - ".github/workflows/daemon.yml"
+  pull_request:
+    paths:
+      - "sandbox-daemon/**"
+      - "proto/schemas/**"
+      - "proto/clients/go/**"
+      - ".github/workflows/daemon.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if daemon not yet scaffolded
+        id: gate
+        run: |
+          if [ -f sandbox-daemon/go.mod ]; then
+            echo "scaffolded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scaffolded=false" >> "$GITHUB_OUTPUT"
+            echo "sandbox-daemon/ not yet scaffolded; nothing to do."
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.gate.outputs.scaffolded == 'true'
+        with:
+          go-version: "1.22"
+          cache-dependency-path: sandbox-daemon/go.sum
+
+      - name: Vet
+        if: steps.gate.outputs.scaffolded == 'true'
+        working-directory: sandbox-daemon
+        run: go vet ./...
+
+      - name: Test
+        if: steps.gate.outputs.scaffolded == 'true'
+        working-directory: sandbox-daemon
+        run: go test ./...
+
+      - name: Build
+        if: steps.gate.outputs.scaffolded == 'true'
+        working-directory: sandbox-daemon
+        run: go build ./...

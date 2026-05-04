@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/resize.json",
+  "title": "PtyResize",
+  "description": "pty.resize — adjust PTY dimensions when the browser window or pane resizes. Daemon issues TIOCSWINSZ. Stub schema; finalise when implementing.",
+  "type": "object",
+  "properties": {
+    "_todo": {
+      "type": "string",
+      "const": "Define PtyResizeRequest body when implementing primitive."
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/envelope.json",
+  "title": "Envelope",
+  "description": "Outer wrapper for every message on the browser ↔ daemon WebSocket. The 'kind' field discriminates between request, response, and event; the 'type' field names the primitive (e.g. 'fs.read', 'pty.output'). 'id' correlates request/response pairs and is omitted on events.",
+  "type": "object",
+  "required": ["kind", "type"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["request", "response", "event", "error"],
+      "description": "Message direction / shape. 'request' expects a matching 'response'; 'event' is server-pushed; 'error' is a failed response."
+    },
+    "type": {
+      "type": "string",
+      "description": "Primitive name in dotted form, e.g. 'fs.read', 'pty.output', 'workspace.info'.",
+      "pattern": "^[a-z][a-z0-9]*\\.[a-z][a-z0-9_-]*$"
+    },
+    "id": {
+      "type": "string",
+      "description": "Correlation id for request/response. UUIDv4 recommended. Omitted on events."
+    },
+    "payload": {
+      "description": "Type-specific body. Validated against the schema for 'type'."
+    },
+    "error": {
+      "type": "object",
+      "description": "Set when kind == 'error'. Code is a stable string for client switching; message is human-readable.",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "details": {}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

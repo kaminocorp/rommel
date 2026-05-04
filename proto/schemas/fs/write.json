@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/write.json",
+  "title": "FsWrite",
+  "description": "fs.write — overwrite a file with the given contents. Stub schema; full request/response shape lands when fs.write is implemented in the daemon.",
+  "type": "object",
+  "properties": {
+    "_todo": {
+      "type": "string",
+      "const": "Define FsWriteRequest / FsWriteResponse when implementing primitive."
+    }
+  }
+}

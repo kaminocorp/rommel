@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/list.json",
+  "title": "FsList",
+  "description": "fs.list — directory entries (name, type, size, mtime). Stub.",
+  "type": "object",
+  "properties": {
+    "_todo": {
+      "type": "string",
+      "const": "Define FsListRequest / FsListResponse when implementing primitive."
+    }
+  }
+}

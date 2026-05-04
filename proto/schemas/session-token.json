@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/session-token.json",
+  "title": "SessionTokenClaims",
+  "description": "JWT claims for the broker token minted by the backend (POST /workspaces/:id/sessions) and validated by the workspace daemon. Algorithm: EdDSA (Ed25519). Signing key lives in backend Fly secret; verifier public key is baked into the workspace VM image.",
+  "type": "object",
+  "required": ["iss", "sub", "aud", "wid", "scope", "exp", "iat", "jti"],
+  "properties": {
+    "iss": {
+      "type": "string",
+      "const": "rommel-backend",
+      "description": "Issuer — always the Rommel control plane."
+    },
+    "sub": {
+      "type": "string",
+      "description": "Subject — opaque user id (matches users.id in Postgres)."
+    },
+    "aud": {
+      "type": "string",
+      "const": "rommel-daemon",
+      "description": "Audience — always the workspace daemon."
+    },
+    "wid": {
+      "type": "string",
+      "description": "Workspace id this token authorises. Daemon rejects tokens whose 'wid' doesn't match its own workspace."
+    },
+    "scope": {
+      "type": "array",
+      "description": "Capability scopes. Daemon enforces per-primitive — e.g. 'fs:rw' grants fs.read + fs.write; 'fs:r' grants read-only. Answers primitives.md cross-cutting Q5.",
+      "items": {
+        "type": "string",
+        "enum": ["fs:r", "fs:rw", "pty:rw", "git:r", "git:rw", "funnel:r", "funnel:rw", "policy:r"]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "exp": {
+      "type": "integer",
+      "description": "Expiry, unix seconds. Tokens are short-lived (~5 min) — refresh via POST /sessions/:id/refresh."
+    },
+    "iat": {
+      "type": "integer",
+      "description": "Issued-at, unix seconds."
+    },
+    "jti": {
+      "type": "string",
+      "description": "JWT id (UUIDv4). Reserved for future replay-protection / revocation list."
+    }
+  },
+  "additionalProperties": false
+}

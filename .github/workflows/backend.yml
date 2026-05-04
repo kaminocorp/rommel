@@ -1,0 +1,56 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "proto/schemas/**"
+      - "proto/clients/python/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "proto/schemas/**"
+      - "proto/clients/python/**"
+      - ".github/workflows/backend.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if backend not yet scaffolded
+        id: gate
+        run: |
+          if [ -f backend/pyproject.toml ]; then
+            echo "scaffolded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scaffolded=false" >> "$GITHUB_OUTPUT"
+            echo "backend/ not yet scaffolded; nothing to do."
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.scaffolded == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        if: steps.gate.outputs.scaffolded == 'true'
+        run: pipx install poetry
+
+      - name: Install deps
+        if: steps.gate.outputs.scaffolded == 'true'
+        working-directory: backend
+        run: poetry install --no-interaction --no-root
+
+      - name: Lint
+        if: steps.gate.outputs.scaffolded == 'true'
+        working-directory: backend
+        run: poetry run ruff check .
+
+      - name: Test
+        if: steps.gate.outputs.scaffolded == 'true'
+        working-directory: backend
+        run: poetry run pytest -q

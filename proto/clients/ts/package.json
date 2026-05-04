@@ -1,0 +1,15 @@
+{
+  "name": "@rommel/proto",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generated TypeScript types for the Rommel ADE wire protocol. DO NOT EDIT — regenerate via `make proto` from repo root.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src/"
+  ]
+}

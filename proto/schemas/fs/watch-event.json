@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/watch-event.json",
+  "title": "FsWatchEvent",
+  "description": "fs.watch — server-pushed event for filesystem changes (created/modified/deleted/moved). Stub.",
+  "type": "object",
+  "properties": {
+    "_todo": {
+      "type": "string",
+      "const": "Define FsWatchEvent body when implementing fs.watch."
+    }
+  }
+}

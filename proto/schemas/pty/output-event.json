@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/output-event.json",
+  "title": "PtyOutputEvent",
+  "description": "pty.output — server-pushed stream of bytes from the PTY. One envelope per chunk (no batching at this layer; daemon may coalesce small writes inside the WebSocket frame). Browser feeds 'data' straight into xterm.js.write().",
+  "type": "object",
+  "required": ["pty_id", "data"],
+  "properties": {
+    "pty_id": { "type": "string" },
+    "data": {
+      "type": "string",
+      "description": "Raw PTY output bytes, base64-encoded."
+    }
+  },
+  "additionalProperties": false
+}

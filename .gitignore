@@ -1,0 +1,47 @@
+# Node / pnpm
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Go
+sandbox-daemon/dist/
+*.test
+*.out
+
+# Build artifacts
+dist/
+build/
+out/
+
+# Env files (never commit; .env.example is fine)
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Deploy tooling
+.fly/
+.vercel/
+
+# Generated proto clients (regenerated via `make proto`)
+proto/clients/ts/src/
+proto/clients/go/gen/
+proto/clients/python/gen/
+
+# Self-contained venv for Python codegen (bootstrapped on first `make proto` run)
+proto/codegen/.venv/

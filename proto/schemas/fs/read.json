@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/read.json",
+  "title": "FsRead",
+  "description": "fs.read — read a single file's contents and metadata. The proof-of-life primitive: implemented end-to-end in the scaffolding phase to verify the proto loop, daemon, and broker token all work together.",
+  "$defs": {
+    "FsReadRequest": {
+      "title": "FsReadRequest",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative path. Daemon rejects absolute paths and any path escaping the workspace root."
+        },
+        "encoding": {
+          "type": "string",
+          "enum": ["utf-8", "base64"],
+          "default": "utf-8",
+          "description": "How 'contents' is encoded in the response. Use base64 for binary files."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsReadResponse": {
+      "title": "FsReadResponse",
+      "type": "object",
+      "required": ["path", "contents", "encoding", "size", "mtime"],
+      "properties": {
+        "path": { "type": "string" },
+        "contents": { "type": "string" },
+        "encoding": { "type": "string", "enum": ["utf-8", "base64"] },
+        "size": {
+          "type": "integer",
+          "description": "Byte length of the on-disk file."
+        },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modified, RFC 3339."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FsReadRequest" },
+    { "$ref": "#/$defs/FsReadResponse" }
+  ]
+}

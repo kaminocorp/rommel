@@ -1,0 +1,55 @@
+name: proto
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "proto/**"
+      - ".github/workflows/proto.yml"
+  pull_request:
+    paths:
+      - "proto/**"
+      - ".github/workflows/proto.yml"
+
+jobs:
+  codegen-clean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if proto/ not yet scaffolded
+        id: gate
+        run: |
+          if [ -x proto/codegen.sh ]; then
+            echo "scaffolded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scaffolded=false" >> "$GITHUB_OUTPUT"
+            echo "proto/codegen.sh not yet present; nothing to do."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.scaffolded == 'true'
+        with:
+          node-version-file: .nvmrc
+
+      - uses: actions/setup-go@v5
+        if: steps.gate.outputs.scaffolded == 'true'
+        with:
+          go-version: "1.22"
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.scaffolded == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate clients
+        if: steps.gate.outputs.scaffolded == 'true'
+        run: ./proto/codegen.sh
+
+      - name: Fail if generated clients are out of date
+        if: steps.gate.outputs.scaffolded == 'true'
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated proto clients are out of date. Run 'make proto' and commit."
+            exit 1
+          fi

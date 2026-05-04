@@ -1,0 +1,59 @@
+name: frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - "proto/schemas/**"
+      - "proto/clients/ts/**"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/frontend.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "proto/schemas/**"
+      - "proto/clients/ts/**"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/frontend.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if frontend not yet scaffolded
+        id: gate
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "scaffolded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scaffolded=false" >> "$GITHUB_OUTPUT"
+            echo "frontend/ not yet scaffolded; nothing to do."
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.gate.outputs.scaffolded == 'true'
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.scaffolded == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: "pnpm"
+
+      - name: Install
+        if: steps.gate.outputs.scaffolded == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        if: steps.gate.outputs.scaffolded == 'true'
+        run: pnpm --filter ./frontend lint
+
+      - name: Build
+        if: steps.gate.outputs.scaffolded == 'true'
+        run: pnpm --filter ./frontend build

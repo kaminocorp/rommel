@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/workspace/info.json",
+  "title": "WorkspaceInfo",
+  "description": "workspace.info — workspace metadata returned by the daemon at session start (and on demand). Used by the frontend to render the header / status bar.",
+  "type": "object",
+  "required": ["id", "daemon_version"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Workspace id. Matches the 'wid' claim of the session token."
+    },
+    "repo": {
+      "type": "object",
+      "description": "Cloned repo info (omitted if no repo imported).",
+      "required": ["url", "branch"],
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "branch": { "type": "string" },
+        "head_sha": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "daemon_version": {
+      "type": "string",
+      "description": "sandbox-daemon git sha + semver, e.g. '0.1.0+abc1234'."
+    }
+  },
+  "additionalProperties": false
+}

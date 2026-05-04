@@ -1,0 +1,15 @@
+[project]
+name = "rommel-proto"
+version = "0.0.0"
+description = "Generated Pydantic v2 models for the Rommel ADE wire protocol. DO NOT EDIT — regenerate via `make proto`."
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.6,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gen"]

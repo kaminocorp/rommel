@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/open.json",
+  "title": "PtyOpen",
+  "description": "pty.open — allocate a new PTY in the workspace. Returns a pty_id used by all subsequent pty.input / pty.output / pty.resize / pty.close calls.",
+  "$defs": {
+    "PtyOpenRequest": {
+      "title": "PtyOpenRequest",
+      "type": "object",
+      "required": ["cols", "rows"],
+      "properties": {
+        "cols": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "cwd": {
+          "type": "string",
+          "description": "Workspace-relative starting directory. Defaults to workspace root."
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra env vars to set on the spawned shell. Merged onto the workspace's baseline env.",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PtyOpenResponse": {
+      "title": "PtyOpenResponse",
+      "type": "object",
+      "required": ["pty_id"],
+      "properties": {
+        "pty_id": {
+          "type": "string",
+          "description": "Opaque handle used by subsequent pty.* calls. UUIDv4."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/PtyOpenRequest" },
+    { "$ref": "#/$defs/PtyOpenResponse" }
+  ]
+}

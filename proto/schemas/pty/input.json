@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/input.json",
+  "title": "PtyInput",
+  "description": "pty.input — write user keystrokes / agent input to a PTY. No response expected (fire-and-forget); errors arrive via the envelope's 'error' kind.",
+  "type": "object",
+  "required": ["pty_id", "data"],
+  "properties": {
+    "pty_id": { "type": "string" },
+    "data": {
+      "type": "string",
+      "description": "Raw bytes to write to the PTY, base64-encoded to keep the wire format JSON-clean. Daemon decodes before write."
+    }
+  },
+  "additionalProperties": false
+}
