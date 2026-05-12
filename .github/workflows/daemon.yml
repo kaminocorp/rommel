@@ -37,6 +37,13 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: sandbox-daemon/go.sum
 
+      # The Go proto client (proto/clients/go/gen/) is gitignored — it's
+      # regenerated from proto/schemas/ via this script. The daemon imports
+      # `protogen` from there, so the build can't proceed without it.
+      - name: Regenerate Go proto client
+        if: steps.gate.outputs.scaffolded == 'true'
+        run: bash proto/codegen/go.sh
+
       - name: Vet
         if: steps.gate.outputs.scaffolded == 'true'
         working-directory: sandbox-daemon

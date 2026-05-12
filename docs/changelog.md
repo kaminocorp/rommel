@@ -4,8 +4,73 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ## Index
 
+- [**0.1.2** — 2026-05-12](#012--2026-05-12) — `sandbox-daemon/`: Go WS server with EdDSA token validation, `system.ping`, and real `fs.read`.
 - [**0.1.1** — 2026-05-04](#011--2026-05-04) — `proto/` source-of-truth + codegen for TS/Go/Pydantic; session token contract committed.
 - [**0.1.0** — 2026-05-04](#010--2026-05-04) — Repo root scaffolding: monorepo plumbing, defensive CI, no subtree code yet.
+
+---
+
+## 0.1.2 — 2026-05-12
+
+**Phase 2 — `sandbox-daemon/` Go binary.** Completion doc: [`docs/completions/phase-2-sandbox-daemon.md`](./completions/phase-2-sandbox-daemon.md). Plan: [`docs/executing/scaffolding-plan.md`](./executing/scaffolding-plan.md) §2.
+
+Status: ✅ Single Go binary (`sandbox-daemon`) that upgrades `/ws?token=…` to a WebSocket, validates EdDSA-signed broker tokens against `protogen.SessionTokenClaims`, round-trips `system.ping`, and implements `fs.read` with a workspace-root path sandbox. Every other primitive from `primitives.md` §1 returns a `not_implemented` error envelope so the surface area is visible. 13 WS-level tests + 3 config tests, all green; `go vet` clean; static binary builds via `make build`.
+
+### Added
+
+- **`sandbox-daemon/`** Go module (module path `github.com/rommel-ade/rommel/sandbox-daemon`, Go 1.22):
+  - `cmd/daemon/main.go` — config load, route table, `http.Server` with `/healthz` (unauthenticated) and `/ws`, graceful shutdown on SIGINT/SIGTERM.
+  - `internal/config/` — env parsing (`ROMMEL_PORT`, `ROMMEL_WORKSPACE_ROOT`, `ROMMEL_WID`, `ROMMEL_TOKEN_PUBKEY` as PEM-encoded Ed25519). Fails fast with **all** errors listed (not first-fail), so an under-configured deploy gets one diagnostic, not three.
+  - `internal/auth/` — `Verify(token, pub, expectedWID)` enforces `alg=EdDSA` allow-list, `iss=rommel-backend`, `aud=rommel-daemon`, `exp > now`, `wid` match; runs claims through `protogen.SessionTokenClaims.UnmarshalJSON` for required-field + scope-enum validation; ships a `HasAnyScope` helper for the dispatcher.
+  - `internal/ws/` — local `Frame` wire type (with `json.RawMessage` payload) wrapping `protogen.Envelope`; gorilla upgrade; per-conn read loop; scope-gated handler dispatch; stable error-code constants (`bad_request`, `not_implemented`, `unknown_type`, `forbidden`, `internal`, `fs.not_found`, `fs.invalid_path`, `fs.io`).
+  - `internal/fs/` — real `fs.read`: workspace-relative path joined to `Root`, `Clean`'d, prefix-checked via `filepath.Rel` (rejects absolute paths and `..` escapes); utf-8/base64 encoding per request; `fs.write`/`fs.list`/`fs.watch` wired but return `not_implemented`.
+  - `internal/pty/` — all `pty.*` verbs return `not_implemented` (PTY lands in a later phase; `creack/pty` import deferred until it's actually needed).
+  - `internal/workspace/` — `workspace.info` returns `{id, daemon_version}` from config; `Repo` omitted until git plumbing lands.
+  - `Makefile` — `bootstrap`, `lint`, `test`, `build`, `run-local`, `clean`. The Go proto gen file is declared as a Make prerequisite, so `cd sandbox-daemon && make test` on a fresh clone auto-runs `proto/codegen/go.sh`.
+  - `Dockerfile` — multi-stage; build context is the repo root so the daemon can see `proto/` for codegen. Output image: `debian:stable-slim` + `tini` + static daemon binary.
+  - `.golangci.yml` — minimal config (errcheck/gofmt/goimports/govet/ineffassign/misspell/staticcheck/unused) with `local-prefixes` set to the module path.
+  - `README.md` — env table, local-dev recipe, wire-format pointer.
+- **Tests** (16 total):
+  - `internal/config/config_test.go` — env happy path, missing-required-vars listing, non-dir workspace root.
+  - `internal/ws/server_test.go` — full WS round-trip suite: healthz, missing/bad-signature/wrong-wid/expired-token upgrade rejections, `system.ping`, unknown primitive, `fs.read` (utf-8 + base64 + absolute-path-rejected + `..`-rejected + not-found), `fs.write` stub, insufficient-scope forbidden, malformed envelope.
+
+### Modified
+
+- **`.github/workflows/daemon.yml`** — added a `Regenerate Go proto client` step that runs `bash proto/codegen/go.sh` between `setup-go` and `vet`. The gen file is gitignored so CI needs to materialize it before any compile step touches `protogen`.
+
+### Decisions
+
+- **Module path mirrors proto's placeholder org.** `github.com/rommel-ade/rommel/sandbox-daemon` lines up with `github.com/rommel-ade/rommel/proto/clients/go`. Both flip together when the real GitHub org lands.
+- **`replace ../proto/clients/go` in go.mod, not `go.work`.** Per the changelog 0.1.1 "Next" callout. A top-level `go.work` would let the replace go away — deferred to a follow-up since it's not blocking and changes a top-level invariant.
+- **Local `ws.Frame` type with `json.RawMessage` payload.** Generated `protogen.Envelope` uses `interface{}` for payload (correct for JSON Schema, awkward for dispatch). The local Frame keeps the wire shape identical but lets handlers receive raw payload bytes — clean seam between codec and router.
+- **`type: "system.ping"`, not `"ping"`.** The envelope schema's `type` pattern requires dotted form. `system.*` is reserved for daemon-level lifecycle (future `system.health`, `system.version`).
+- **`WithValidMethods([]string{"EdDSA"})` on JWT parse.** Required to avoid `alg=none` / algorithm-confusion attacks; `jwt/v5` does not enforce a method allow-list by default.
+- **Claims validated through `protogen.SessionTokenClaims.UnmarshalJSON`.** Parse → re-marshal → unmarshal pipes the bag through the schema's generated validation (required fields + scope-enum). One schema, no duplicated validation code in the daemon.
+- **Path sandbox is `Clean` + `Rel` prefix check; no `EvalSymlinks`.** Confirmed with the user. Rejects absolute paths and `..` escapes; symlink-resolution is deferred until the daemon graduates from scaffolding (the daemon's own README and the completion doc both flag this).
+- **Routes as a `map[string]Route`, not a switch.** Required scopes sit alongside handler functions in one screen of `cmd/daemon/main.go`. Adding a primitive is a map entry. Audit-friendly.
+- **Stubs return `code: "not_implemented"`, every primitive is wired.** Every `primitives.md` §1 verb has a route entry. Clients discover the surface from the wire, not from team channels.
+- **Daemon Makefile treats `proto/clients/go/gen/proto.go` as a prerequisite.** Cold-start `cd sandbox-daemon && make test` works on a fresh clone — Make calls `proto/codegen/go.sh` automatically.
+
+### Cross-cutting: capability scoping is live
+
+Phase 1 committed the scope vocabulary to the schema (`fs:r`, `fs:rw`, `pty:rw`, …). Phase 2 actually enforces it: `cmd/daemon/main.go::buildRoutes` binds each primitive to its required scopes (any-of), and the dispatcher returns `forbidden` if the token's `scope` array doesn't satisfy the route. The `TestFsRead_InsufficientScope_Forbidden` test confirms the gate fires for a `pty:rw`-only token trying `fs.read`.
+
+### Verification
+
+```sh
+cd sandbox-daemon
+make test                                # 16 tests, all pass
+make build                               # → dist/sandbox-daemon (static binary)
+make lint                                # go vet ./... clean
+
+# Cold-start: proto gen file gets regenerated automatically
+rm -rf ../proto/clients/go/gen
+make test                                # → Make runs proto/codegen/go.sh, then tests pass
+```
+
+### Next
+
+Per [`docs/executing/scaffolding-plan.md`](./executing/scaffolding-plan.md) §3: **`workspace-image/`** — Docker image that bakes the daemon binary plus baseline tools (`git`, `curl`, `ca-certificates`, `tini`), shipped to Fly's registry as the image used by the Machines API to spawn per-workspace VMs. The Dockerfile in `sandbox-daemon/` is already a working multi-stage build for the binary — the `workspace-image/` subtree wraps it into the deployable artifact (Fly app: `rommel-workspaces`).
 
 ---
 
