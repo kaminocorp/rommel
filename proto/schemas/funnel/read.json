@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/funnel/read.json",
+  "title": "FunnelRead",
+  "description": "funnel.read — markdown body of one entry. Capped at 1 MiB by the daemon to keep a runaway file from oom-ing the editor.",
+  "$defs": {
+    "FunnelReadRequest": {
+      "title": "FunnelReadRequest",
+      "type": "object",
+      "required": ["stage", "name"],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": ["triage", "plans", "next-up", "executing", "completions", "archive"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Entry basename — no path separator. Daemon rejects names containing '/' or starting with '.' or '..'."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FunnelReadResponse": {
+      "title": "FunnelReadResponse",
+      "type": "object",
+      "required": ["stage", "name", "contents", "size", "mtime"],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": ["triage", "plans", "next-up", "executing", "completions", "archive"]
+        },
+        "name": { "type": "string" },
+        "contents": {
+          "type": "string",
+          "description": "UTF-8 markdown contents."
+        },
+        "size": { "type": "integer" },
+        "mtime": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FunnelReadRequest" },
+    { "$ref": "#/$defs/FunnelReadResponse" }
+  ]
+}

@@ -9,8 +9,10 @@ import { useCreateSession } from "./useWorkspace";
 // POST /sessions → open WS → send system.ping → store result.
 // Cleanup tears the socket down on unmount.
 //
-// Plan §step-4. The hook is intentionally thin — daemon.ts owns the state
-// machine; this hook just bridges React's lifecycle to it.
+// Phase 6: the resolved DaemonConnection is now stashed in the connection
+// store so sibling components (FileTree, FunnelBoard, EditorPane) can RPC
+// against the same socket. Set once after connect() resolves; cleared on
+// unmount.
 
 export function useDaemonConnection(workspaceId: string): void {
   const { mutateAsync: createSession } = useCreateSession(workspaceId);
@@ -50,6 +52,7 @@ export function useDaemonConnection(workspaceId: string): void {
           conn.close();
           return;
         }
+        store.setDaemon(conn);
 
         const pong = await conn.rpc<Record<string, never>, { ok: boolean; ts: string }>(
           "system.ping",
@@ -66,8 +69,10 @@ export function useDaemonConnection(workspaceId: string): void {
     return () => {
       cancelled = true;
       conn?.close();
-      // Don't reset the store on unmount — the workspace page may re-mount
-      // under StrictMode and we want the pill to keep its state visible.
+      store.setDaemon(null);
+      // Don't reset the rest of the store on unmount — the workspace page may
+      // re-mount under StrictMode and we want the pill to keep its state
+      // visible.
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);

@@ -40,4 +40,34 @@ describe("connection store", () => {
     expect(s.status).toBe("idle");
     expect(s.lastError).toBeNull();
   });
+
+  // Phase 6 additions ---------------------------------------------------------
+
+  it("setDaemon stashes and clears the shared DaemonConnection ref", () => {
+    expect(useConnectionStore.getState().daemon).toBeNull();
+    // The real type is DaemonConnection; for the store test a sentinel
+    // object is enough — the store doesn't care what it holds.
+    const fake = { mark: "daemon" } as unknown as ReturnType<typeof useConnectionStore.getState>["daemon"];
+    useConnectionStore.getState().setDaemon(fake);
+    expect(useConnectionStore.getState().daemon).toBe(fake);
+    useConnectionStore.getState().setDaemon(null);
+    expect(useConnectionStore.getState().daemon).toBeNull();
+  });
+
+  it("selectFile is null by default and round-trips a path", () => {
+    expect(useConnectionStore.getState().selectedFile).toBeNull();
+    useConnectionStore.getState().selectFile("README.md");
+    expect(useConnectionStore.getState().selectedFile).toBe("README.md");
+    useConnectionStore.getState().selectFile(null);
+    expect(useConnectionStore.getState().selectedFile).toBeNull();
+  });
+
+  it("reset clears daemon and selectedFile too", () => {
+    const fake = { mark: "x" } as unknown as ReturnType<typeof useConnectionStore.getState>["daemon"];
+    useConnectionStore.getState().setDaemon(fake);
+    useConnectionStore.getState().selectFile("foo.ts");
+    useConnectionStore.getState().reset();
+    expect(useConnectionStore.getState().daemon).toBeNull();
+    expect(useConnectionStore.getState().selectedFile).toBeNull();
+  });
 });

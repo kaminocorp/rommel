@@ -35,6 +35,12 @@ const (
 	ErrCodeFsNotFound     = "fs.not_found"
 	ErrCodeFsInvalidPath  = "fs.invalid_path"
 	ErrCodeFsIO           = "fs.io"
+
+	ErrCodeFunnelInvalidStage      = "funnel.invalid_stage"
+	ErrCodeFunnelInvalidName       = "funnel.invalid_name"
+	ErrCodeFunnelInvalidTransition = "funnel.invalid_transition"
+	ErrCodeFunnelNotFound          = "funnel.not_found"
+	ErrCodeFunnelIO                = "funnel.io"
 )
 
 // response builds a success envelope echoing the request id and type.

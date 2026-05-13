@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/funnel/promote.json",
+  "title": "FunnelPromote",
+  "description": "funnel.promote — move an entry between stages. Atomic os.Rename on POSIX. The daemon enforces the transition table: forward-only along triage → plans → next-up → executing → completions → archive, plus archive-from-anywhere as a kill switch. All other transitions return funnel.invalid_transition.",
+  "$defs": {
+    "FunnelPromoteRequest": {
+      "title": "FunnelPromoteRequest",
+      "type": "object",
+      "required": ["name", "from", "to"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Entry basename to promote. Must already exist under rommel/<from>/."
+        },
+        "from": {
+          "type": "string",
+          "enum": ["triage", "plans", "next-up", "executing", "completions", "archive"]
+        },
+        "to": {
+          "type": "string",
+          "enum": ["triage", "plans", "next-up", "executing", "completions", "archive"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "FunnelPromoteResponse": {
+      "title": "FunnelPromoteResponse",
+      "type": "object",
+      "required": ["name", "from", "to", "mtime"],
+      "properties": {
+        "name": { "type": "string" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Modification timestamp of the entry after the move. Same value as before the rename — os.Rename does not touch mtime."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FunnelPromoteRequest" },
+    { "$ref": "#/$defs/FunnelPromoteResponse" }
+  ]
+}

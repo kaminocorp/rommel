@@ -2,12 +2,57 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://rommel.dev/schemas/fs/write.json",
   "title": "FsWrite",
-  "description": "fs.write — overwrite a file with the given contents. Stub schema; full request/response shape lands when fs.write is implemented in the daemon.",
-  "type": "object",
-  "properties": {
-    "_todo": {
-      "type": "string",
-      "const": "Define FsWriteRequest / FsWriteResponse when implementing primitive."
+  "description": "fs.write — overwrite a file with the given contents. Full-content write; patch-based writes (fs.patch) are a future primitive. v1 supports mode=overwrite only; the field is reserved so 'create' / 'append' can land without a schema break.",
+  "$defs": {
+    "FsWriteRequest": {
+      "title": "FsWriteRequest",
+      "type": "object",
+      "required": ["path", "contents"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative path. Daemon rejects absolute paths and any path escaping the workspace root. Parent directory must already exist (fs.mkdir is a separate primitive)."
+        },
+        "contents": {
+          "type": "string",
+          "description": "File contents. Interpreted per 'encoding'."
+        },
+        "encoding": {
+          "type": "string",
+          "enum": ["utf-8", "base64"],
+          "default": "utf-8",
+          "description": "How 'contents' is encoded on the wire. Use base64 for binary data."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["overwrite"],
+          "default": "overwrite",
+          "description": "Write mode. v1 supports 'overwrite' only; 'create' / 'append' reserved for future."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsWriteResponse": {
+      "title": "FsWriteResponse",
+      "type": "object",
+      "required": ["path", "size", "mtime"],
+      "properties": {
+        "path": { "type": "string" },
+        "size": {
+          "type": "integer",
+          "description": "Byte length of the file after writing."
+        },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Post-write modification timestamp, RFC 3339."
+        }
+      },
+      "additionalProperties": false
     }
-  }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FsWriteRequest" },
+    { "$ref": "#/$defs/FsWriteResponse" }
+  ]
 }

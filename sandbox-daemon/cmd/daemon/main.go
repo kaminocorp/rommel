@@ -17,12 +17,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	protogen "github.com/rommel-ade/rommel/proto/clients/go/gen"
 	"github.com/rommel-ade/rommel/sandbox-daemon/internal/config"
 	fsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/fs"
+	funnelx "github.com/rommel-ade/rommel/sandbox-daemon/internal/funnel"
 	ptyx "github.com/rommel-ade/rommel/sandbox-daemon/internal/pty"
 	wsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/ws"
 	wsinfo "github.com/rommel-ade/rommel/sandbox-daemon/internal/workspace"
@@ -70,9 +72,11 @@ func main() {
 
 // buildRoutes assembles the primitive → handler map. Required scopes mirror
 // the session-token.json enum: fs:r grants read-only fs.*; fs:rw grants both;
-// pty:rw is the only pty scope (read/write is inherent to a PTY).
+// pty:rw is the only pty scope (read/write is inherent to a PTY); funnel:r /
+// funnel:rw scope the planning-funnel verbs.
 func buildRoutes(cfg *config.Config) map[string]wsx.Route {
 	fsh := &fsx.Handler{Root: cfg.WorkspaceRoot}
+	funh := &funnelx.Handler{Root: filepath.Join(cfg.WorkspaceRoot, "rommel")}
 	ptyh := &ptyx.Handler{}
 	info := &wsinfo.InfoHandler{WID: cfg.WID}
 
@@ -85,6 +89,13 @@ func buildRoutes(cfg *config.Config) map[string]wsx.Route {
 	}
 	ptyRw := []protogen.SessionTokenClaimsScopeElem{
 		protogen.SessionTokenClaimsScopeElemPtyRw,
+	}
+	funnelR := []protogen.SessionTokenClaimsScopeElem{
+		protogen.SessionTokenClaimsScopeElemFunnelR,
+		protogen.SessionTokenClaimsScopeElemFunnelRw,
+	}
+	funnelRw := []protogen.SessionTokenClaimsScopeElem{
+		protogen.SessionTokenClaimsScopeElemFunnelRw,
 	}
 
 	return map[string]wsx.Route{
@@ -102,11 +113,16 @@ func buildRoutes(cfg *config.Config) map[string]wsx.Route {
 			return b, nil
 		}},
 
-		// fs.* — sandboxed under workspace root. fs.read is real; the rest stub.
+		// fs.* — sandboxed under workspace root. read/list/write real; watch stubbed.
 		"fs.read":  {RequiredScope: fsR, Fn: fsh.Read},
-		"fs.write": {RequiredScope: fsRw, Fn: fsh.NotImplemented("fs.write")},
-		"fs.list":  {RequiredScope: fsR, Fn: fsh.NotImplemented("fs.list")},
+		"fs.list":  {RequiredScope: fsR, Fn: fsh.List},
+		"fs.write": {RequiredScope: fsRw, Fn: fsh.Write},
 		"fs.watch": {RequiredScope: fsR, Fn: fsh.NotImplemented("fs.watch")},
+
+		// funnel.* — sandboxed under <WorkspaceRoot>/rommel/.
+		"funnel.list":    {RequiredScope: funnelR, Fn: funh.List},
+		"funnel.read":    {RequiredScope: funnelR, Fn: funh.Read},
+		"funnel.promote": {RequiredScope: funnelRw, Fn: funh.Promote},
 
 		// pty.* — all stubbed in scaffolding.
 		"pty.open":   {RequiredScope: ptyRw, Fn: ptyh.NotImplemented("pty.open")},

@@ -4,12 +4,123 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ## Index
 
+- [**0.1.6** — 2026-05-13](#016--2026-05-13) — `rommel/` planning funnel folders dogfooded; first real daemon primitives wired wire-to-wire: `fs.list` / `fs.write` / `funnel.list` / `funnel.read` / `funnel.promote`. Real FileTree, Cmd+S-saving EditorPane, six-column FunnelBoard. Scaffolding era closes — every future primitive is one additive PR.
 - [**0.1.5** — 2026-05-13](#015--2026-05-13) — `frontend/`: Next.js 15 + React 19 IDE shell — Supabase SSR auth, TanStack Query, Zustand store, `lib/daemon.ts` WS wrapper, dynamic-imported Monaco + xterm panes, Vitest + Playwright suites. Pattern-B browser-side originator committed; live Playwright + Vercel deploy are the named carryover.
 - [**0.1.4** — 2026-05-13](#014--2026-05-13) — `backend/`: FastAPI control plane — Supabase auth seam, EdDSA session-token broker, workspace CRUD, Fly orchestrator stub. Integration gate green: backend signs → daemon verifies → ping round-trips.
 - [**0.1.3** — 2026-05-13](#013--2026-05-13) — `workspace-image/`: Fly Machine VM image — baked daemon binary, EdDSA pubkey, `git`/`curl`/`tini`; canonical Dockerfile.
 - [**0.1.2** — 2026-05-12](#012--2026-05-12) — `sandbox-daemon/`: Go WS server with EdDSA token validation, `system.ping`, and real `fs.read`.
 - [**0.1.1** — 2026-05-04](#011--2026-05-04) — `proto/` source-of-truth + codegen for TS/Go/Pydantic; session token contract committed.
 - [**0.1.0** — 2026-05-04](#010--2026-05-04) — Repo root scaffolding: monorepo plumbing, defensive CI, no subtree code yet.
+
+---
+
+## 0.1.6 — 2026-05-13
+
+**Phase 6 — `rommel/` planning funnel + first real daemon primitives.** Completion doc: [`docs/completions/phase-6-funnel.md`](./completions/phase-6-funnel.md). Plan (archived on completion): [`docs/archive/phase-6-funnel-plan.md`](./archive/phase-6-funnel-plan.md). Specialization of [`scaffolding-plan.md`](./executing/scaffolding-plan.md) §6, broadened per the 0.1.5 "Next" pointer.
+
+Status: ✅ Code authored to plan end-to-end. The §6 dogfooded folders are in place at `rommel/{triage,plans,next-up,executing,completions,archive}/`. The first **real daemon primitives** are wired wire-to-wire: `fs.list`, `fs.write`, `funnel.list`, `funnel.read`, `funnel.promote` — each with a typed `@rommel/proto` schema, a Go handler, a daemon-level test, a typed TS wrapper in `frontend/src/lib/`, a TanStack-Query hook, and a real component consuming it. **19 new daemon tests + 16 new frontend unit tests pass green** alongside the prior suites (47 daemon-side total, 27 frontend-side total). The "scaffolding era" closes here: every future primitive is one additive PR against five seams (`proto/schemas/<verb>.json` → `cmd/daemon/main.go` dispatch → `internal/<domain>/handler.go` → `frontend/src/lib/<domain>.ts` → `frontend/src/hooks/<useDomain>.ts`). Carryover, same shape as Phase 5: live Playwright extension for the new flows + first Vercel deploy of the upgraded shell.
+
+### Added
+
+- **`rommel/`** dogfood folder tree (visible folder per user confirmation; `vision.md` allowed either, the kanban-on-disk concept argues for visible):
+  - `rommel/README.md` (overview + stage table + link to vision.md §Layer 2).
+  - One `README.md` per stage under `triage/` `plans/` `next-up/` `executing/` `completions/` `archive/`.
+  - `rommel/executing/phase-6-funnel-plan.md` — dogfooded copy of the plan (duplicated, not symlinked; survives Windows clones).
+- **`proto/schemas/funnel/`** — new domain:
+  - `list.json` (`FunnelListRequest/Response` + `FunnelStage` + `FunnelEntry`; six-stage enum on the schema).
+  - `read.json` (`FunnelReadRequest/Response`; 1 MiB body cap codified in description; daemon enforces).
+  - `promote.json` (`FunnelPromoteRequest/Response`; stage enum on both `from` and `to`).
+- **`sandbox-daemon/internal/funnel/handler.go`** — ★ new package. `Handler{Root}` rooted at `<WorkspaceRoot>/rommel` (convention, no env var). `List` returns empty for a missing rommel/ (the funnel is opt-in). `Read` caps at 1 MiB. `Promote` validates against the transition table via `isValidTransition(from, to)` then `os.Rename` for atomic POSIX moves. Name validator rejects path separators, leading dots, and `..`.
+- **`frontend/src/lib/fs.ts`** — typed wrappers: `fsList(conn, path)`, `fsRead(conn, path, encoding?)`, `fsWrite(conn, path, contents, encoding?)`. ~30 LOC; the wire contract is owned by `@rommel/proto`, the transport by `DaemonConnection` — this file just bolts them together.
+- **`frontend/src/lib/funnel.ts`** — same shape: `funnelList`, `funnelRead`, `funnelPromote`. Plus `FUNNEL_STAGES` constant, `FUNNEL_STAGE_LABEL` display map, and `validNextStages(from)` — the FE mirror of `isValidTransition` so the promote dropdown shows only valid targets. Daemon enforces server-side regardless; the FE filter is UX, not security.
+- **`frontend/src/hooks/useFs.ts`** — `useFsList(path, {enabled})`, `useFsRead(path)`, `useFsWrite()`. The mutation invalidates `["fs", "read", path]` + the `["fs", "list"]` prefix on success.
+- **`frontend/src/hooks/useFunnel.ts`** — `useFunnelList(stage)`, `useFunnelRead(stage, name)`, `useFunnelPromote()`. Promote invalidates both source and destination list keys so the board snaps to the new layout.
+- **`frontend/tests/unit/fs-rpc.test.ts`** — 4 cases: list / read default-utf8 / write+error-envelope / base64 passthrough.
+- **`frontend/tests/unit/funnel-rpc.test.ts`** — 5 cases: the `FUNNEL_STAGES` canonical ordering / the `validNextStages` table mirror / list+read+promote RPC round-trips against the FakeWebSocket.
+- **`docs/completions/phase-6-funnel.md`** — this phase's completion doc.
+
+### Modified
+
+- **`proto/schemas/fs/list.json`** — was a `_todo` stub; now defines `FsListRequest` / `FsListResponse` / `FsListEntry` with `kind ∈ {file, dir, symlink}`, byte `size`, RFC-3339 `mtime`, and a top-level `oneOf` that codegen unwraps into three exported types.
+- **`proto/schemas/fs/write.json`** — was a `_todo` stub; now defines `FsWriteRequest` (path + contents + encoding ∈ {utf-8, base64} + reserved `mode: "overwrite"` enum) and `FsWriteResponse` (path + size + mtime).
+- **`sandbox-daemon/internal/ws/envelope.go`** — five new stable error codes: `funnel.invalid_stage`, `funnel.invalid_name`, `funnel.invalid_transition`, `funnel.not_found`, `funnel.io`. Same constants travel on the wire; the FE switches on them.
+- **`sandbox-daemon/internal/fs/handler.go`** — extended with `List()` and `Write()` methods. `resolve()` got an early-return for `clean == rootClean` so `fs.list(".")` (the workspace root) is accepted; previously the `filepath.Rel` round-trip returned `.` which the old guard didn't accept. `Write()` returns `fs.not_found` if the parent dir is missing (no `fs.mkdir` yet) so the FE can show a useful message.
+- **`sandbox-daemon/cmd/daemon/main.go`** — wired real handlers into the dispatch map: `fs.list` / `fs.write` replace their `NotImplemented` stubs; new `funnel.list` / `.read` / `.promote` routes bound to `funnel:r` / `funnel:rw` (already in the session-token enum since Phase 1). The funnel handler is constructed against `filepath.Join(cfg.WorkspaceRoot, "rommel")`.
+- **`sandbox-daemon/internal/ws/server_test.go`** — added `funnelx` to the harness, broadened default token scopes to include `funnel:rw`, replaced `TestFsWrite_StubReturnsNotImplemented` with 8 real fs.write/fs.list tests, and added 10 funnel tests. Reused the existing `roundTrip` / `mintToken` helpers — no harness rework. New count: 31 tests, all green.
+- **`frontend/src/stores/connection.ts`** — added `daemon: DaemonConnection | null` (shared socket ref) and `selectedFile: string | null` (workspace-scoped editor state). `reset()` clears both.
+- **`frontend/src/hooks/useDaemonConnection.ts`** — after `connect()` resolves, `store.setDaemon(conn)`; cleared in unmount cleanup. No other lifecycle change.
+- **`frontend/src/components/filetree/FileTree.tsx`** — stub replaced with a real recursive `Node` component. Top-level mounts `useFsList(".")`; each subtree mounts its own `useFsList(path, {enabled: open})` query. Clicking a file pokes `store.selectFile(path)`; the EditorPane picks it up.
+- **`frontend/src/components/editor/monaco-impl.tsx`** — went from inert welcome buffer to a real editor: subscribes to `selectedFile`, runs `useFsRead`, fills the Monaco buffer on resolve, tracks `dirty`, binds `Cmd/Ctrl+S` via `editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, …)`, and runs `useFsWrite` on save. Title bar shows path + `loading…` / `● modified` / `saving…` / `saved Ns ago`. Language inference covers ts/tsx/js/json/md/py/go/yaml/sh/css/html/rs/toml; rest fall back to plaintext.
+- **`frontend/src/components/funnel/FunnelBoard.tsx`** — stub replaced with a six-column kanban. Each `StageColumn` runs `useFunnelList(stage)`; each `Card` shows the entry name + a "Promote ▸" dropdown filtered by `validNextStages(stage)`. Clicking a card name pokes `selectFile("rommel/<stage>/<name>")` so the entry opens in the editor.
+- **`frontend/src/components/shell/Header.tsx`** — accepts an optional `children` prop so callers can inject the IDE/Funnel toggle into the header.
+- **`frontend/src/app/workspaces/[id]/workspace-client.tsx`** — added an IDE / Funnel view toggle (rendered into `<Header>`). When `view === "funnel"`, the editor+terminal grid is replaced by `<FunnelBoard />`; FileTree stays visible in both modes.
+- **`frontend/src/hooks/useFs.ts`** — `useFsList(path, opts?: { enabled?: boolean })` so FileTree's collapsed-subtree case reads naturally.
+- **`frontend/tests/unit/connection-store.test.ts`** — extended with three new cases covering `setDaemon`, `selectFile`, and `reset()` clearing the Phase-6 fields.
+
+### Removed / Moved
+
+- **`docs/executing/phase-6-funnel-plan.md`** → **`docs/archive/phase-6-funnel-plan.md`** — same archival move Phases 3 / 4 / 5 made on completion. The `executing/` folder is reserved for in-flight plans.
+
+### Decisions
+
+- **`rommel/` (visible), not `.rommel/` ✅** — confirmed with user. Kanban-on-disk is user-facing content. The daemon hard-codes the funnel root as `<WorkspaceRoot>/rommel` — convention, not configuration.
+- **Kebab-case stage folder names ✅** — `triage`, `plans`, `next-up`, `executing`, `completions`, `archive`. Display names ("Next Up") get formatted in `FUNNEL_STAGE_LABEL`; on disk it's `next-up`.
+- **Transition table: linear forward + archive-from-anywhere ✅** — encoded once on each side and identical by construction: `sandbox-daemon/internal/funnel/handler.go::isValidTransition` and `frontend/src/lib/funnel.ts::validNextStages`. Daemon enforces server-side; FE filter is UX only.
+- **Daemon connection sharing via the Zustand store ⚠ refined** — alternative was a React context. Store extension wins: minimal diff, no provider plumbing, class-instance ref equality holds because `setDaemon` fires exactly once per mount. Hooks gate on `status === "ready"` so RPCs don't fire against a half-built socket.
+- **Editor: one-file-at-a-time, Cmd+S save, no dirty-confirm ✅** — no tabs in v1. Clicking another file replaces the buffer outright. Save is an explicit act. Multi-file tabs + "discard unsaved" modal are follow-ups; they don't change the wire contract.
+- **`fs.list` returns kind ∈ {file, dir, symlink}, no recursion ✅** — one `fs.list` per opened directory; tree state lives in React. Hidden files included by default — they matter in an IDE.
+- **`fs.write` is overwrite-only; `mode` field reserved ✅** — v1 sends full file contents. The `mode: "overwrite"` enum is reserved so `mode: "create"` / `mode: "append"` can land without breaking the wire. `fs.patch` deferred.
+- **Funnel card content read is on-demand, not eager ✅** — `FunnelBoard` shows names only; the body loads via `funnel.read` when the user opens the card. Eager fetch would have been 6 × N RPCs per board mount.
+- **NEW — `fs.list(".")` root-case fix ⚠ refined** — the original `fs.Handler.resolve()` rejected the workspace root itself because `filepath.Rel(root, root) == "."` failed the previous guard. Phase 6 adds an early-return `if clean == rootClean { return clean }`. Escape-detection logic unchanged for every other path.
+- **NEW — Backend already authorised funnel scopes ✅** — `ROMMEL_DEFAULT_SCOPES` (Phase 4 §0) already contained `funnel:rw`; tokens minted today carry it without any backend change. No backend touched this phase.
+
+### Cross-cutting: the scaffolding era closes here
+
+Phases 1–5 stood the substrate up. Phase 6 is the first phase that *uses* it rather than building it. Properties earned:
+
+- **One additive seam per new primitive.** Adding `fs.stat` or `git.status` from here is five small steps: schema, codegen, Go handler, dispatch entry, TS wrapper + hook. The Pattern-B auth loop, the WS transport, the envelope encode/decode, the request-correlation, reconnect-and-refresh — none of those need to be touched.
+- **Tests scale linearly with primitives.** The `server_test.go` harness already mints tokens, dials WS, round-trips envelopes, and asserts error codes; every new primitive adds 4–8 test cases against that same harness. The FE's `FakeWebSocket` pattern in `tests/unit/*-rpc.test.ts` is the same shape — same ergonomics on both sides of the wire.
+- **The funnel is now self-hosting.** The repo's own Phase plans live under `rommel/executing/` while in flight and `rommel/archive/` on completion. Promoting a plan is a real `funnel.promote` call against the dogfooded directory.
+
+### Verification
+
+```sh
+# Daemon unit suite — 47 cases, hermetic, no network:
+make -C sandbox-daemon test
+# expected: internal/config and internal/ws PASS; new TestFs{List,Write}_* and TestFunnel* cases all green
+
+# Frontend unit suite — 27 cases, jsdom + FakeWebSocket, no network:
+pnpm --filter ./frontend test:unit
+# expected: 5 files, 27 tests — connection-store(8), daemon(8), fs-rpc(4), funnel-rpc(5), auth(2)
+
+# Frontend lint:
+pnpm --filter ./frontend lint
+# expected: clean exit
+
+# Three-terminal end-to-end:
+#   T1: ROMMEL_WORKSPACE_ROOT=$(pwd) make -C sandbox-daemon run-local
+#   T2: docker compose -f backend/compose.yaml up -d postgres && make -C backend migrate run
+#   T3: pnpm --filter ./frontend dev
+# Browser:
+#   - Sign in → open the dev workspace
+#   - File tree mounts the repo root → drill into rommel/executing/phase-6-funnel-plan.md
+#   - Editor opens it; edit; Cmd+S → "saved 0s ago"
+#   - Toggle Funnel → six columns render
+#   - Promote ▸ → Completions on the plan card; board snaps to the new layout
+```
+
+Captured this session: daemon `go test ./...` all green (cached + fresh runs), frontend `pnpm test:unit` green at 5 files / 27 tests / 489 ms, `pnpm lint` clean. TypeScript `typecheck` reports zero errors in any Phase-6-touched file; the remaining 19 `tsc` complaints sit in Phase-5 files and are part of the pre-existing 0.1.5 "named carryover" (Supabase cookie typing, RequestInit body typing).
+
+### Next
+
+The substrate is done. Every entry in [`docs/primitives.md`](./primitives.md) is now an additive PR against five seams. Candidates ordered by leverage:
+
+1. **`pty.open` / `pty.input` / `pty.output`** — lights up the terminal pane. xterm UI already in place from Phase 5; only daemon-side PTY + WS event-stream wiring is new. Prerequisite for "run agents in the terminal" (Vision Layer 3).
+2. **`fs.watch`** — solves the editor / on-disk drift gap called out in this phase's plan §9.3.
+3. **`git.*` structured primitives** — `git.status`, `git.diff`, `git.commit`, `git.branch.*`. Shell out internally; return parsed structured data.
+4. **`fs.mkdir` / `fs.move` / `fs.delete`** — fill in the rest of the fs domain; closes the v1 file-tree story.
+
+Carryover follow-ups (small, network-bound): live Playwright spec for the new flows (`tests/e2e/funnel.spec.ts`), first Vercel deploy of the upgraded shell, Phase-5 typecheck cleanup bundled with that deploy.
 
 ---
 

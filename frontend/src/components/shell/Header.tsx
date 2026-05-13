@@ -4,7 +4,13 @@ import Link from "next/link";
 import { useMe } from "@/hooks/useWorkspace";
 import type { Workspace } from "@/types/workspace";
 
-export function Header({ workspace }: { workspace: Workspace }) {
+export function Header({
+  workspace,
+  children,
+}: {
+  workspace: Workspace;
+  children?: React.ReactNode;
+}) {
   const me = useMe();
 
   return (
@@ -19,8 +25,9 @@ export function Header({ workspace }: { workspace: Workspace }) {
           {workspace.status}
         </span>
       </div>
-      <div className="text-xs text-zinc-500">
-        {me.data?.email ?? me.data?.sub ?? "…"}
+      <div className="flex items-center gap-4">
+        {children}
+        <div className="text-xs text-zinc-500">{me.data?.email ?? me.data?.sub ?? "…"}</div>
       </div>
     </header>
   );

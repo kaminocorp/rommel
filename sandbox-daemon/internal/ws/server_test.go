@@ -22,6 +22,7 @@ import (
 	protogen "github.com/rommel-ade/rommel/proto/clients/go/gen"
 	"github.com/rommel-ade/rommel/sandbox-daemon/internal/config"
 	fsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/fs"
+	funnelx "github.com/rommel-ade/rommel/sandbox-daemon/internal/funnel"
 	wsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/ws"
 )
 
@@ -52,21 +53,28 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	fsh := &fsx.Handler{Root: cfg.WorkspaceRoot}
+	funh := &funnelx.Handler{Root: filepath.Join(cfg.WorkspaceRoot, "rommel")}
+	fsR := []protogen.SessionTokenClaimsScopeElem{
+		protogen.SessionTokenClaimsScopeElemFsR,
+		protogen.SessionTokenClaimsScopeElemFsRw,
+	}
+	fsRw := []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemFsRw}
+	funnelR := []protogen.SessionTokenClaimsScopeElem{
+		protogen.SessionTokenClaimsScopeElemFunnelR,
+		protogen.SessionTokenClaimsScopeElemFunnelRw,
+	}
+	funnelRw := []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemFunnelRw}
+
 	routes := map[string]wsx.Route{
 		"system.ping": {Fn: func(_ context.Context, _ *protogen.SessionTokenClaims, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 			return json.RawMessage(`{"ok":true}`), nil
 		}},
-		"fs.read": {
-			RequiredScope: []protogen.SessionTokenClaimsScopeElem{
-				protogen.SessionTokenClaimsScopeElemFsR,
-				protogen.SessionTokenClaimsScopeElemFsRw,
-			},
-			Fn: fsh.Read,
-		},
-		"fs.write": {
-			RequiredScope: []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemFsRw},
-			Fn:            fsh.NotImplemented("fs.write"),
-		},
+		"fs.read":        {RequiredScope: fsR, Fn: fsh.Read},
+		"fs.list":        {RequiredScope: fsR, Fn: fsh.List},
+		"fs.write":       {RequiredScope: fsRw, Fn: fsh.Write},
+		"funnel.list":    {RequiredScope: funnelR, Fn: funh.List},
+		"funnel.read":    {RequiredScope: funnelR, Fn: funh.Read},
+		"funnel.promote": {RequiredScope: funnelRw, Fn: funh.Promote},
 	}
 
 	srv := wsx.NewServer(cfg, routes)
@@ -97,7 +105,7 @@ func (h *harness) mintToken(t *testing.T, opts tokenOpts) string {
 		opts.wid = h.cfg.WID
 	}
 	if opts.scope == nil {
-		opts.scope = []string{"fs:rw", "pty:rw"}
+		opts.scope = []string{"fs:rw", "pty:rw", "funnel:rw"}
 	}
 	if opts.exp == 0 {
 		opts.exp = 5 * time.Minute
@@ -371,7 +379,83 @@ func TestFsRead_NotFound(t *testing.T) {
 	}
 }
 
-func TestFsWrite_StubReturnsNotImplemented(t *testing.T) {
+// --- fs.list ----------------------------------------------------------------
+
+func TestFsList_HappyPath(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(filepath.Join(h.root, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(h.root, "b.txt"), []byte("bb"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(h.root, "sub"), 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.list", map[string]any{"path": "."})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q want response (err=%+v)", resp.Kind, resp.Error)
+	}
+	var body protogen.FsListResponse
+	if err := json.Unmarshal(resp.Payload, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Entries) != 3 {
+		t.Fatalf("entries: got %d want 3 (%+v)", len(body.Entries), body.Entries)
+	}
+	// sorted by name → a.txt, b.txt, sub
+	if body.Entries[0].Name != "a.txt" || body.Entries[1].Name != "b.txt" || body.Entries[2].Name != "sub" {
+		t.Fatalf("order: %+v", body.Entries)
+	}
+	if body.Entries[2].Kind != protogen.FsListEntryKindDir {
+		t.Fatalf("kind: got %q want dir for sub", body.Entries[2].Kind)
+	}
+	if body.Entries[1].Size != 2 {
+		t.Fatalf("size: got %d want 2 for b.txt", body.Entries[1].Size)
+	}
+}
+
+func TestFsList_NotADir_Rejected(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(filepath.Join(h.root, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.list", map[string]any{"path": "f"})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFsInvalidPath {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFsInvalidPath)
+	}
+}
+
+func TestFsList_NotFound(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.list", map[string]any{"path": "nope"})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFsNotFound {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFsNotFound)
+	}
+}
+
+// --- fs.write ---------------------------------------------------------------
+
+func TestFsWrite_Creates(t *testing.T) {
 	h := newHarness(t)
 	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
 	if err != nil {
@@ -379,9 +463,347 @@ func TestFsWrite_StubReturnsNotImplemented(t *testing.T) {
 	}
 	defer conn.Close()
 
+	resp := h.roundTrip(t, conn, "request", "fs.write", map[string]any{"path": "new.txt", "contents": "hello"})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q want response (err=%+v)", resp.Kind, resp.Error)
+	}
+	got, err := os.ReadFile(filepath.Join(h.root, "new.txt"))
+	if err != nil {
+		t.Fatalf("readback: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("on-disk: got %q want %q", got, "hello")
+	}
+}
+
+func TestFsWrite_Overwrites(t *testing.T) {
+	h := newHarness(t)
+	path := filepath.Join(h.root, "f.txt")
+	if err := os.WriteFile(path, []byte("first"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.write", map[string]any{"path": "f.txt", "contents": "second"})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q (err=%+v)", resp.Kind, resp.Error)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "second" {
+		t.Fatalf("on-disk: got %q want %q", got, "second")
+	}
+}
+
+func TestFsWrite_Base64_Binary(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// base64 of bytes {0x00, 0xff, 0x10}
+	resp := h.roundTrip(t, conn, "request", "fs.write", map[string]any{
+		"path":     "blob.bin",
+		"contents": "AP8Q",
+		"encoding": "base64",
+	})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q (err=%+v)", resp.Kind, resp.Error)
+	}
+	got, _ := os.ReadFile(filepath.Join(h.root, "blob.bin"))
+	if len(got) != 3 || got[0] != 0x00 || got[1] != 0xff || got[2] != 0x10 {
+		t.Fatalf("bytes: %v", got)
+	}
+}
+
+func TestFsWrite_AbsolutePath_Rejected(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.write", map[string]any{"path": "/etc/passwd", "contents": "x"})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFsInvalidPath {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFsInvalidPath)
+	}
+}
+
+func TestFsWrite_InsufficientScope_Forbidden(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
 	resp := h.roundTrip(t, conn, "request", "fs.write", map[string]any{"path": "x", "contents": "y"})
-	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeNotImplemented {
-		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeNotImplemented)
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeForbidden {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeForbidden)
+	}
+}
+
+func TestFsWrite_ParentMissing_NotFound(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.write", map[string]any{
+		"path":     "missing-dir/f.txt",
+		"contents": "x",
+	})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFsNotFound {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFsNotFound)
+	}
+}
+
+// --- funnel.list ------------------------------------------------------------
+
+// seedFunnel makes <root>/rommel/<stage>/ and drops files in it. Returns the
+// stage dir path.
+func seedFunnel(t *testing.T, root, stage string, files map[string]string) string {
+	t.Helper()
+	dir := filepath.Join(root, "rommel", stage)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	return dir
+}
+
+func TestFunnelList_HappyPath(t *testing.T) {
+	h := newHarness(t)
+	seedFunnel(t, h.root, "triage", map[string]string{
+		"idea-a.md": "# A",
+		"idea-b.md": "# B",
+	})
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"funnel:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.list", map[string]any{"stage": "triage"})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q (err=%+v)", resp.Kind, resp.Error)
+	}
+	var body protogen.FunnelListResponse
+	if err := json.Unmarshal(resp.Payload, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(body.Stage) != "triage" {
+		t.Fatalf("stage: got %q want triage", body.Stage)
+	}
+	if len(body.Entries) != 2 {
+		t.Fatalf("entries: got %d (%+v)", len(body.Entries), body.Entries)
+	}
+	if body.Entries[0].Name != "idea-a.md" || body.Entries[1].Name != "idea-b.md" {
+		t.Fatalf("order: %+v", body.Entries)
+	}
+}
+
+func TestFunnelList_MissingDir_ReturnsEmpty(t *testing.T) {
+	// rommel/ does not exist — must return empty, not error.
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"funnel:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.list", map[string]any{"stage": "plans"})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q (err=%+v)", resp.Kind, resp.Error)
+	}
+	var body protogen.FunnelListResponse
+	if err := json.Unmarshal(resp.Payload, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Entries) != 0 {
+		t.Fatalf("entries: got %d want 0", len(body.Entries))
+	}
+}
+
+func TestFunnelList_InvalidStage_Rejected(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"funnel:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Bypass the request struct's JSON enum decoder by sending raw — we want
+	// the handler-level rejection path tested, not the codegen's unmarshal.
+	resp := h.roundTrip(t, conn, "request", "funnel.list", map[string]any{"stage": "nope"})
+	if resp.Error == nil {
+		t.Fatalf("expected error")
+	}
+	// Either the bad_request from the protogen unmarshaler OR the
+	// funnel.invalid_stage from the handler is acceptable. Both prove the
+	// invalid stage didn't reach the filesystem.
+	if resp.Error.Code != wsx.ErrCodeFunnelInvalidStage && resp.Error.Code != wsx.ErrCodeBadRequest {
+		t.Fatalf("code: got %+v", resp.Error)
+	}
+}
+
+// --- funnel.read ------------------------------------------------------------
+
+func TestFunnelRead_HappyPath(t *testing.T) {
+	h := newHarness(t)
+	seedFunnel(t, h.root, "plans", map[string]string{"plan-x.md": "# Plan X\n\nbody"})
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"funnel:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.read", map[string]any{"stage": "plans", "name": "plan-x.md"})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q (err=%+v)", resp.Kind, resp.Error)
+	}
+	var body protogen.FunnelReadResponse
+	if err := json.Unmarshal(resp.Payload, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Contents != "# Plan X\n\nbody" {
+		t.Fatalf("contents: %q", body.Contents)
+	}
+}
+
+func TestFunnelRead_InvalidName_Rejected(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"funnel:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.read", map[string]any{
+		"stage": "plans",
+		"name":  "../../etc/passwd",
+	})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFunnelInvalidName {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFunnelInvalidName)
+	}
+}
+
+func TestFunnelRead_NotFound(t *testing.T) {
+	h := newHarness(t)
+	// Make the stage dir exist so we get past the parent-dir check.
+	seedFunnel(t, h.root, "triage", nil)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"funnel:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.read", map[string]any{"stage": "triage", "name": "absent.md"})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFunnelNotFound {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFunnelNotFound)
+	}
+}
+
+// --- funnel.promote ---------------------------------------------------------
+
+func TestFunnelPromote_HappyPath(t *testing.T) {
+	h := newHarness(t)
+	seedFunnel(t, h.root, "triage", map[string]string{"card.md": "# card"})
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.promote", map[string]any{
+		"name": "card.md", "from": "triage", "to": "plans",
+	})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q (err=%+v)", resp.Kind, resp.Error)
+	}
+	// Old location gone, new location present.
+	if _, err := os.Stat(filepath.Join(h.root, "rommel", "triage", "card.md")); !os.IsNotExist(err) {
+		t.Fatalf("source still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.root, "rommel", "plans", "card.md")); err != nil {
+		t.Fatalf("dest missing: %v", err)
+	}
+}
+
+func TestFunnelPromote_BackwardsRejected(t *testing.T) {
+	h := newHarness(t)
+	seedFunnel(t, h.root, "plans", map[string]string{"card.md": "x"})
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.promote", map[string]any{
+		"name": "card.md", "from": "plans", "to": "triage",
+	})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFunnelInvalidTransition {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFunnelInvalidTransition)
+	}
+}
+
+func TestFunnelPromote_ArchiveFromAnywhere(t *testing.T) {
+	h := newHarness(t)
+	seedFunnel(t, h.root, "triage", map[string]string{"oops.md": "kill me"})
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.promote", map[string]any{
+		"name": "oops.md", "from": "triage", "to": "archive",
+	})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: got %q (err=%+v)", resp.Kind, resp.Error)
+	}
+}
+
+func TestFunnelPromote_NotFound(t *testing.T) {
+	h := newHarness(t)
+	seedFunnel(t, h.root, "triage", nil)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.promote", map[string]any{
+		"name": "ghost.md", "from": "triage", "to": "plans",
+	})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFunnelNotFound {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFunnelNotFound)
+	}
+}
+
+func TestFunnel_InsufficientScope_Forbidden(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "funnel.list", map[string]any{"stage": "triage"})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeForbidden {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeForbidden)
 	}
 }
 

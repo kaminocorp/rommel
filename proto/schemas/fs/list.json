@@ -2,12 +2,67 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://rommel.dev/schemas/fs/list.json",
   "title": "FsList",
-  "description": "fs.list — directory entries (name, type, size, mtime). Stub.",
-  "type": "object",
-  "properties": {
-    "_todo": {
-      "type": "string",
-      "const": "Define FsListRequest / FsListResponse when implementing primitive."
+  "description": "fs.list — directory entries (name, kind, size, mtime). Non-recursive; the FE expands one level at a time via repeat fs.list calls. Hidden files (leading '.') are included by default — they matter in an IDE.",
+  "$defs": {
+    "FsListRequest": {
+      "title": "FsListRequest",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative directory path. '.' lists the workspace root. Daemon rejects absolute paths and any path escaping the workspace root."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsListEntry": {
+      "title": "FsListEntry",
+      "type": "object",
+      "required": ["name", "kind", "size", "mtime"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Basename only — no path separator. The caller joins to its working path."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["file", "dir", "symlink"],
+          "description": "POSIX d_type equivalent. Other kinds (block/char/socket/fifo) are not surfaced in v1; the daemon coalesces them to 'file' so the FE doesn't crash on them."
+        },
+        "size": {
+          "type": "integer",
+          "description": "Byte length. Meaningful for kind=file; 0 for dir/symlink in v1."
+        },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modified, RFC 3339."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsListResponse": {
+      "title": "FsListResponse",
+      "type": "object",
+      "required": ["path", "entries"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Echo of the request path, normalized."
+        },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FsListEntry" },
+          "description": "Entries in the directory, sorted by name (case-sensitive, locale-independent)."
+        }
+      },
+      "additionalProperties": false
     }
-  }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FsListRequest" },
+    { "$ref": "#/$defs/FsListResponse" },
+    { "$ref": "#/$defs/FsListEntry" }
+  ]
 }

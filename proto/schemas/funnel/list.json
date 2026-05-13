@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/funnel/list.json",
+  "title": "FunnelList",
+  "description": "funnel.list — entries in one funnel stage. Stages mirror docs/vision.md §Layer 2 and the on-disk rommel/<stage>/ folders. A missing rommel/ directory is not an error: a workspace without a funnel returns an empty list.",
+  "$defs": {
+    "FunnelStage": {
+      "title": "FunnelStage",
+      "type": "string",
+      "enum": ["triage", "plans", "next-up", "executing", "completions", "archive"],
+      "description": "One of the six pipeline stages, kebab-case to match the on-disk folder names."
+    },
+    "FunnelListRequest": {
+      "title": "FunnelListRequest",
+      "type": "object",
+      "required": ["stage"],
+      "properties": {
+        "stage": { "$ref": "#/$defs/FunnelStage" }
+      },
+      "additionalProperties": false
+    },
+    "FunnelEntry": {
+      "title": "FunnelEntry",
+      "type": "object",
+      "required": ["name", "size", "mtime"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Basename of the entry under rommel/<stage>/. Markdown files conventionally; the daemon does not enforce an extension."
+        },
+        "size": {
+          "type": "integer",
+          "description": "Byte length."
+        },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modified, RFC 3339. The funnel UI uses this to sort 'recently active' cards."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FunnelListResponse": {
+      "title": "FunnelListResponse",
+      "type": "object",
+      "required": ["stage", "entries"],
+      "properties": {
+        "stage": { "$ref": "#/$defs/FunnelStage" },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FunnelEntry" },
+          "description": "Entries in the stage, sorted by name. Subdirectories under rommel/<stage>/ are skipped — v1's funnel is one level deep."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FunnelListRequest" },
+    { "$ref": "#/$defs/FunnelListResponse" },
+    { "$ref": "#/$defs/FunnelEntry" }
+  ]
+}
