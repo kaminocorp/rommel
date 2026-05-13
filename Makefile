@@ -65,9 +65,11 @@ build:
 	$(call run_if_exists,frontend,build,build)
 	$(call run_if_exists,backend,build,build)
 	$(call run_if_exists,sandbox-daemon,build,build)
+	$(call run_if_exists,workspace-image,build,build)
 
 clean:
 	$(call run_if_exists,frontend,clean,clean)
 	$(call run_if_exists,backend,clean,clean)
 	$(call run_if_exists,sandbox-daemon,clean,clean)
+	$(call run_if_exists,workspace-image,clean,clean)
 	@rm -rf node_modules

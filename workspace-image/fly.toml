@@ -1,0 +1,44 @@
+# Fly app for the Rommel workspace machines.
+#
+# Machines are created PER-WORKSPACE by the backend (Phase 4) via the
+# Machines API; this file describes the app-level shape only. The image is
+# built and pushed via workspace-image/scripts; Fly itself never builds it.
+#
+# Three deliberate non-declarations:
+#
+#   1. No [[services]] — workspaces are not exposed to the public internet.
+#      Internal reachability is via .flycast / .internal DNS on the daemon
+#      port (7777). The backend is the only thing that connects.
+#
+#   2. No [mounts] / volume declarations — volumes are per-workspace, created
+#      by the backend at machine create time and attached at /workspace.
+#      Declaring volumes here would make them app-wide (a classic Fly
+#      footgun).
+#
+#   3. No auto-stop / auto-start in [[services]] — those are per-machine
+#      flags the backend passes to machine_create, since `fly.toml`
+#      describes the app, not individual machines.
+
+app = "rommel-workspaces"
+primary_region = "iad"
+
+[build]
+  # Image is built and pushed by workspace-image/scripts/push.sh.
+  # `fly deploy` references this latest tag if ever invoked directly; in
+  # production the backend pins to a SHA via the Machines API.
+  image = "registry.fly.io/rommel-workspaces:latest"
+
+[env]
+  # ROMMEL_TOKEN_PUBKEY is baked into the image at /etc/rommel/token.pubkey
+  # (see Decision 0.2). ROMMEL_WORKSPACE_ROOT is set as Dockerfile ENV
+  # (Decision 0.4). ROMMEL_WID and any per-machine overrides are injected by
+  # the backend via the Machines API.
+
+# Internal port the daemon listens on. Declaring this without [[services]]
+# means the port is reachable inside Fly's private network only.
+[experimental]
+  internal_port = 7777
+
+[[restart]]
+  policy = "on-failure"
+  retries = 3

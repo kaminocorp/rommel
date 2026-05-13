@@ -1,0 +1,5 @@
+# Local-only image-build scratch. Real EdDSA pubkeys live outside the repo
+# and are passed in via ROMMEL_TOKEN_PUBKEY_FILE at build time.
+token.pubkey.local
+*.pubkey.local
+*.pem.local

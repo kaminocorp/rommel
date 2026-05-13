@@ -1,0 +1,55 @@
+# Repo-root .dockerignore. Exists for workspace-image/Dockerfile (build
+# context = repo root). Docker only reads <context-root>/.dockerignore; a
+# per-Dockerfile ignore would require BuildKit's <dockerfile>.dockerignore
+# extension which we deliberately avoid for portability.
+#
+# Future Dockerfiles built from repo-root context should extend this list,
+# not shadow it.
+
+# VCS, CI, harness — none of this is ever COPY'd.
+.git/
+.github/
+.claude/
+.rommel/
+
+# Docs are big and never needed by any build.
+docs/
+
+# Other subtrees the workspace image doesn't touch. (workspace-image/
+# itself isn't listed — the Dockerfile copies workspace-image/rootfs/ and
+# workspace-image/scripts/entrypoint.sh.)
+frontend/
+backend/
+infra/
+
+# Per-language scratch.
+**/node_modules/
+**/.next/
+**/dist/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.turbo/
+**/*.tsbuildinfo
+
+# Generated proto artifacts. The Dockerfile regenerates them inside the
+# build stage from proto/schemas/, so a stale local checkout doesn't bleed
+# into the image.
+proto/clients/ts/src/
+proto/clients/go/gen/
+proto/clients/python/gen/
+proto/codegen/.venv/
+
+# Editor / OS noise.
+**/.DS_Store
+**/.idea/
+**/.vscode/
+**/*.swp
+**/*.log
+
+# Env files — never bake secrets into an image layer.
+**/.env
+**/.env.*
+!**/.env.example

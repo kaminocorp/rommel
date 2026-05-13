@@ -4,9 +4,81 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ## Index
 
+- [**0.1.3** — 2026-05-13](#013--2026-05-13) — `workspace-image/`: Fly Machine VM image — baked daemon binary, EdDSA pubkey, `git`/`curl`/`tini`; canonical Dockerfile.
 - [**0.1.2** — 2026-05-12](#012--2026-05-12) — `sandbox-daemon/`: Go WS server with EdDSA token validation, `system.ping`, and real `fs.read`.
 - [**0.1.1** — 2026-05-04](#011--2026-05-04) — `proto/` source-of-truth + codegen for TS/Go/Pydantic; session token contract committed.
 - [**0.1.0** — 2026-05-04](#010--2026-05-04) — Repo root scaffolding: monorepo plumbing, defensive CI, no subtree code yet.
+
+---
+
+## 0.1.3 — 2026-05-13
+
+**Phase 3 — `workspace-image/` Fly Machine image.** Completion doc: [`docs/completions/phase-3-workspace-image.md`](./completions/phase-3-workspace-image.md). Plan: [`docs/executing/phase-3-workspace-image-plan.md`](./executing/phase-3-workspace-image-plan.md).
+
+Status: ✅ Local image build, smoke test, and signal-handling all green. `make -C workspace-image build` produces `rommel-workspaces:<git-sha>` from repo-root context in ~25 s warm (~110 s cold); compressed registry size **66 MiB**. The image boots under `tini`, the entrypoint loads the EdDSA pubkey from `/etc/rommel/token.pubkey` into `ROMMEL_TOKEN_PUBKEY`, fails fast on missing `ROMMEL_WID`, and forwards SIGTERM to the daemon's graceful shutdown (sub-second drain). Fly-side `fly machine run` cold-start measurement is the one verification deferred — needs `fly auth login`, recipe baked into `workspace-image/README.md`.
+
+### Added
+
+- **`workspace-image/`** subtree:
+  - `Dockerfile` — multi-stage: `golang:1.23` builder regenerates the proto Go client and compiles a static `-trimpath -ldflags="-s -w"` daemon binary; runtime stage is `debian:stable-slim` + `apt(ca-certificates curl git tini)` + daemon binary + baked `rootfs/`. Build context is the repo root.
+  - `fly.toml` — `app = "rommel-workspaces"`, `internal_port = 7777`, **no `[[services]]`** (internal Flycast/`.internal` only), **no volumes** (the backend attaches one per workspace via the Machines API). `[[restart]] policy = "on-failure"`.
+  - `Makefile` — `build` / `push` / `run-local` / `clean`. Same `IMAGE=… TAG=…` env override pattern as the daemon's Makefile.
+  - `.gitignore` — local-only pubkey overrides (`*.pubkey.local`, `*.pem.local`).
+  - `rootfs/etc/rommel/daemon.env.example` — documents every `ROMMEL_*` env the daemon reads.
+  - `rootfs/etc/rommel/token.pubkey.example` — real Ed25519 PEM committed for dev builds; the matching private key was generated in `/tmp/`, used only to derive the pubkey, then deleted in the same `openssl` step, so the dev verifier is intentionally unrecoverable.
+  - `scripts/build.sh` — `cd $(git rev-parse --show-toplevel)` then `docker build -f workspace-image/Dockerfile ... .` with `--build-arg ROMMEL_TOKEN_PUBKEY_FILE`. `TAG_LATEST=true` opt-in for `:latest`.
+  - `scripts/push.sh` — `flyctl auth whoami` gate, `flyctl auth docker` credential install, then `docker tag` + `docker push` to `registry.fly.io/rommel-workspaces:<tag>`.
+  - `scripts/entrypoint.sh` — `set -euo pipefail` bash; loads the PEM into `ROMMEL_TOKEN_PUBKEY` (the daemon parses PEM contents, not a file path); fails fast on missing `ROMMEL_WID`; `exec`'s the daemon under tini.
+  - `README.md` — full build / smoke / push / cold-start recipe + gotchas (build-context, `.dockerignore` location, pubkey rotation, no public services).
+- **`.dockerignore`** at the repo root — new file written for `workspace-image/`'s build context. Sweeps out `.git/`, `.github/`, `.claude/`, `.rommel/`, `docs/`, `frontend/`, `backend/`, `infra/`, all `node_modules/`, `.next/`, `.venv/`, generated proto clients, env files. Documented as the canonical ignore for any future Dockerfile built from repo root.
+- **`.github/workflows/workspace-image.yml`** — path-filtered on `workspace-image/**`, `sandbox-daemon/**`, `proto/**`, `.dockerignore`, and the workflow itself. Gates on `workspace-image/Dockerfile` existing (same skip-when-absent pattern as `daemon.yml`/`frontend.yml`/`backend.yml`/`proto.yml`). PR runs `scripts/build.sh` with `TAG_LATEST=false`; `push` to `main` additionally runs `superfly/flyctl-actions/setup-flyctl` + `scripts/push.sh` with `FLY_API_TOKEN` from secrets and `TAG_LATEST=true`.
+
+### Modified
+
+- **Top-level `Makefile`** — added `workspace-image` to the `build` and `clean` target lists via the existing `run_if_exists` helper. `lint`/`test` deliberately untouched (the image has neither — CI builds it instead).
+- **`sandbox-daemon/README.md`** — replaced the "Building the Docker image" section with a pointer to `workspace-image/`. Inner-loop dev (`make run-local` on Go source) is unchanged.
+
+### Removed
+
+- **`sandbox-daemon/Dockerfile`** — per Decision 0.1 of the Phase-3 plan. The workspace-image Dockerfile is now the only Dockerfile in the repo. Keeping a near-duplicate in `sandbox-daemon/` would have diverged the moment one was updated without the other; the daemon's local-dev path doesn't need Docker.
+
+### Decisions
+
+- **Single Dockerfile, in `workspace-image/`.** The daemon's binary is built from source inside `workspace-image/Dockerfile`'s build stage. No second Dockerfile, no cross-Dockerfile `FROM` plumbing.
+- **EdDSA pubkey baked as a file via `ARG ROMMEL_TOKEN_PUBKEY_FILE`.** PEM lives at `/etc/rommel/token.pubkey`; entrypoint exports its contents into `ROMMEL_TOKEN_PUBKEY` before `exec`'ing the daemon. Rotation requires a rebuild — intentional, so tokens can never outlive the deploy that minted their verifier.
+- **No `[[services]]` in `fly.toml`.** Workspaces are reachable only via `.flycast` / `.internal` DNS on port 7777. If `0.0.0.0` exposure ever shows up here, the EdDSA scope-gate becomes the *last* line of defense rather than defense-in-depth.
+- **`ROMMEL_WORKSPACE_ROOT=/workspace` as Dockerfile `ENV` + `WORKDIR /workspace`.** Pairs cleanly with Fly volumes (attached over the same path per workspace by the backend) and lets bare `docker run` work without a volume mount.
+- **Repo-root `.dockerignore`.** Docker only reads `<context-root>/.dockerignore`; per-Dockerfile ignores would require BuildKit-only extensions we don't want. Future Dockerfiles built from repo-root context should extend it, not shadow it.
+- **Tag by git SHA; `:latest` on main only.** PR builds never tag `:latest`; `TAG_LATEST=true` is an opt-in flag the CI sets only on `push` to `main`.
+- **Builder bumped to `golang:1.23`.** The Phase-3 plan and the deleted `sandbox-daemon/Dockerfile` both used `golang:1.22`. Upstream `github.com/atombender/go-jsonschema@v0.18.0` (invoked by `proto/codegen/go.sh`) raised its toolchain floor to 1.23; the build failed at the codegen step until we bumped the builder. The runtime stage is unchanged; the daemon's `go.mod` declares `go 1.22` as a minimum, which a 1.23 toolchain honours. **Follow-up:** `daemon.yml` and `proto.yml` pin `setup-go@v5` `go-version: "1.22"` and will hit the same wall in CI — bump in the next PR.
+
+### Cross-cutting: production token-pubkey baking path is live
+
+Phase 1 settled the contract; Phase 2 made the daemon verify against it; Phase 3 closes the loop on **how the verifier reaches the daemon in production**. PEM is baked into the image layer at build time, written to `/etc/rommel/token.pubkey`, and loaded by the entrypoint. Backend signing key (Phase 4) and daemon verifying key are now provably tied to a deployed image SHA — the property we wanted from Decision 0.2.
+
+### Verification
+
+```sh
+make -C workspace-image build                # → rommel-workspaces:<short-sha>, ~25s warm
+docker image inspect rommel-workspaces:<sha> --format '{{.Size}}'   # → 69,355,305 bytes (66 MiB)
+
+# happy-path smoke
+docker run -d --rm -p 7777:7777 -e ROMMEL_WID="dev-workspace" rommel-workspaces:<sha>
+curl -fsS http://localhost:7777/healthz      # → "ok" on first poll (<200ms after container start)
+# daemon log line: "daemon: listening on :7777 (wid=dev-workspace, root=/workspace)"
+
+# signal-forwarding smoke
+time docker stop -t 10 <cid>                 # → 0m0.133s  (tini → daemon graceful shutdown)
+
+# fail-fast smoke
+docker run --rm rommel-workspaces:<sha>      # → "entrypoint: ROMMEL_WID is required ..." exit 1
+```
+
+Deferred: `fly machine run` cold-start measurement (needs `fly auth login`; recipe in `workspace-image/README.md` §"Deploy a machine and measure cold start").
+
+### Next
+
+Per [`docs/executing/scaffolding-plan.md`](./executing/scaffolding-plan.md) §4: **`backend/`** — FastAPI control plane. Newly unblocked by Phase 3: `POST /workspaces/:id/sessions` has a real verifier to mint tokens for; `services/fly_orchestrator.py`'s `create_machine` has a real image ref (`registry.fly.io/rommel-workspaces:<sha>`); the Pattern B loop (browser → backend `/sessions` → daemon WS) is now wire-realistic on the daemon side.
 
 ---
 

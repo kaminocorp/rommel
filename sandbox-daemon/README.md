@@ -84,10 +84,4 @@ sandbox-daemon/
 
 ## Building the Docker image
 
-Build context must be the **repo root** (the Dockerfile copies `proto/` and `sandbox-daemon/` from there):
-
-```sh
-docker build -f sandbox-daemon/Dockerfile -t rommel-sandbox-daemon .
-```
-
-The image is intended for the `workspace-image/` subtree (Phase 3) to consume.
+The daemon binary is consumed by [`workspace-image/`](../workspace-image/), which produces the production Fly Machine image. For local development, use `make run-local` (Go source); for image-level smoke tests, see [`workspace-image/README.md`](../workspace-image/README.md). Phase 3 removed this subtree's standalone `Dockerfile` — the canonical image is now in `workspace-image/`.

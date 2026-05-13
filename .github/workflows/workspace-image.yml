@@ -1,0 +1,61 @@
+name: workspace-image
+
+# Build the workspace VM image on every PR that touches anything baked into
+# it; push to Fly's registry only on main. Gate-on-Dockerfile-exists keeps
+# the workflow inert before the subtree lands (the same pattern as the
+# frontend/backend/daemon workflows).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "workspace-image/**"
+      - "sandbox-daemon/**"
+      - "proto/**"
+      - ".dockerignore"
+      - ".github/workflows/workspace-image.yml"
+  pull_request:
+    paths:
+      - "workspace-image/**"
+      - "sandbox-daemon/**"
+      - "proto/**"
+      - ".dockerignore"
+      - ".github/workflows/workspace-image.yml"
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if workspace-image not yet scaffolded
+        id: gate
+        run: |
+          if [ -f workspace-image/Dockerfile ]; then
+            echo "scaffolded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scaffolded=false" >> "$GITHUB_OUTPUT"
+            echo "workspace-image/ not yet scaffolded; nothing to do."
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.gate.outputs.scaffolded == 'true'
+
+      # PR runs build only (no push). Main runs build, then push, with
+      # TAG_LATEST=true so the registry gets both :<sha> and :latest.
+      - name: Build
+        if: steps.gate.outputs.scaffolded == 'true'
+        env:
+          TAG_LATEST: ${{ github.event_name == 'push' && 'true' || 'false' }}
+        run: bash workspace-image/scripts/build.sh
+
+      - name: Setup flyctl
+        if: steps.gate.outputs.scaffolded == 'true' && github.event_name == 'push'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Push to Fly registry (main only)
+        if: steps.gate.outputs.scaffolded == 'true' && github.event_name == 'push'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          TAG_LATEST: "true"
+        run: bash workspace-image/scripts/push.sh
