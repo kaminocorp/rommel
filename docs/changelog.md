@@ -4,6 +4,7 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ## Index
 
+- [**0.1.5** — 2026-05-13](#015--2026-05-13) — `frontend/`: Next.js 15 + React 19 IDE shell — Supabase SSR auth, TanStack Query, Zustand store, `lib/daemon.ts` WS wrapper, dynamic-imported Monaco + xterm panes, Vitest + Playwright suites. Pattern-B browser-side originator committed; live Playwright + Vercel deploy are the named carryover.
 - [**0.1.4** — 2026-05-13](#014--2026-05-13) — `backend/`: FastAPI control plane — Supabase auth seam, EdDSA session-token broker, workspace CRUD, Fly orchestrator stub. Integration gate green: backend signs → daemon verifies → ping round-trips.
 - [**0.1.3** — 2026-05-13](#013--2026-05-13) — `workspace-image/`: Fly Machine VM image — baked daemon binary, EdDSA pubkey, `git`/`curl`/`tini`; canonical Dockerfile.
 - [**0.1.2** — 2026-05-12](#012--2026-05-12) — `sandbox-daemon/`: Go WS server with EdDSA token validation, `system.ping`, and real `fs.read`.
@@ -12,7 +13,109 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ---
 
-## 0.1.4 — 2026-05-13
+## 0.1.5 — 2026-05-13
+
+**Phase 5 — `frontend/` Next.js IDE shell.** Completion doc: [`docs/completions/phase-5-frontend.md`](./completions/phase-5-frontend.md). Plan (archived on completion): [`docs/archive/phase-5-frontend-plan.md`](./archive/phase-5-frontend-plan.md).
+
+Status: ✅ Code authored to plan end-to-end. New `frontend/` subtree on Next.js 15 + React 19 + Tailwind 4 + App Router. The `lib/daemon.ts` WS wrapper owns the wire (envelope encode/decode against `@rommel/proto`, request/response correlation by `id`, 5-attempt exponential-backoff reconnect, three-way token refresh: close-1008 / invalid_token / wall-clock at `exp - 30s`). The browser side of the Pattern-B auth loop is now committed: `useCreateSession()` calls `POST /workspaces/:id/sessions` on the backend, `DaemonConnection` opens `ws(s)://…/ws?token=…` directly to the daemon, `system.ping` round-trips, the `ConnectionPill` flips to `ready`. Hermetic Vitest suite (8 + 5 + 2 cases) authored against a fake-WebSocket test double; Playwright integration-gate spec authored that mirrors the Phase-4 Python round-trip from Chromium. The full pipeline runs in CI under an opt-in `vars.RUN_E2E == 'true'` job that brings up postgres + backend + daemon + frontend in one shot. **Live first execution — `pnpm install` lockfile resolution, `next build`, the live Playwright pass, first `vercel link` + prod deploy — is the named carryover for a network-enabled session, exactly the shape Phase 4 deferred its `fly deploy`.**
+
+### Added
+
+- **`frontend/`** subtree:
+  - `package.json` — `@rommel/frontend`; pinned `next@15.0.0`, `react@19.0.0`, `react-dom@19.0.0`, `tailwindcss@^4.0.0-beta.3`, `@supabase/ssr@^0.5.2`, `@supabase/supabase-js@^2.45.4`, `@tanstack/react-query@^5.59.0`, `zustand@^5.0.0`, `@monaco-editor/react@^4.6.0` + `monaco-editor@^0.52.0`, `@xterm/xterm@^5.5.0` + `@xterm/addon-fit@^0.10.0` + `@xterm/addon-web-links@^0.11.0`, `zod`, `clsx`, `tailwind-merge`, `class-variance-authority`, `@radix-ui/react-slot`, `lucide-react`, `server-only`. Dev: typescript, eslint (flat), `typescript-eslint`, react / react-hooks / jsx-a11y plugins, prettier + `prettier-plugin-tailwindcss`, vitest + jsdom + `@vitejs/plugin-react`, `@testing-library/react`, `@playwright/test`. Node `>=20`, pnpm 9.
+  - `tsconfig.json` — strict + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`; path alias `@/* → src/*`.
+  - `next.config.mjs` — `transpilePackages: ["@rommel/proto"]` (risk 4.2; the TS proto client ships raw `.ts`).
+  - `tailwind.config.ts` — content globs, `darkMode: "class"`, `pill.*` color tokens for the four-state connection indicator.
+  - `eslint.config.mjs` — flat config; `no-restricted-imports` blocks `**/lib/env.server` from `src/**` (risk 4.5 mechanical guard).
+  - `middleware.ts` — runs on `/workspaces/:path*`; signed-out users get redirected to `/sign-in?next=<url>` before any RSC fetch hits the backend.
+  - `src/app/`:
+    - `layout.tsx` (root + `<Providers>` client wrapper for `QueryClientProvider`).
+    - `page.tsx` — RSC workspace picker; pulls Bearer from the supabase-ssr cookie via `getAccessTokenFromCookies(cookies())`.
+    - `sign-in/page.tsx` — Supabase magic-link OTP form.
+    - `auth/callback/route.ts` — OAuth code-exchange handler (`exchangeCodeForSession` → cookie session → redirect to `next`).
+    - `workspaces/[id]/page.tsx` (RSC: fetches workspace metadata, hands off to client) + `workspace-client.tsx` (client island: grid layout + `useDaemonConnection` mount).
+  - `src/components/`:
+    - `shell/Header.tsx`, `StatusBar.tsx`, `ConnectionPill.tsx` (`data-testid` + `data-status` for the integration gate), `WorkspaceCreateButton.tsx`.
+    - `ui/button.tsx` (shadcn-style; Slot + cva). Other shadcn primitives deferred until a real consumer needs them (Phase 6+).
+    - `filetree/FileTree.tsx` (stub), `funnel/FunnelBoard.tsx` (stub).
+    - `editor/EditorPane.tsx` + `monaco-impl.tsx` — `dynamic({ ssr: false })` boundary, `vs-dark` markdown welcome buffer.
+    - `terminal/TerminalPane.tsx` + `xterm-impl.tsx` — dynamic xterm + fit + web-links addons; `ResizeObserver` calls `fit.fit()` on container resize.
+  - `src/lib/`:
+    - `daemon.ts` — ★ `DaemonConnection` class: `connect()`, `rpc(type, payload)`, `subscribe(type, handler) → unsubscribe`, `close()`; five-state machine (`connecting`/`ready`/`reconnecting`/`failed`/`closed`); exponential backoff 250 ms→5 s with 5-attempt ceiling; `refreshAndReopen()` triggered by close-1008/4401, `error.code === "invalid_token"`, or wall-clock `exp - 30 s`; `appendTokenIfMissing()` so the daemon URL `?token=…` append is wrapper-owned not caller-owned.
+    - `auth.ts` — three Supabase factories (`createBrowserClient`, `createServerClient(cookies())`, `createMiddlewareSupabaseClient(req,res)`) + `getAccessTokenFromCookies()` helper for RSCs.
+    - `api.ts` — typed `fetch` wrapper; throws `ApiError(status, body)` on non-2xx so TanStack Query's `retry` can switch on `/^API 401/` and bail rather than retry through middleware-bounces.
+    - `env.client.ts` (zod over `NEXT_PUBLIC_*`) + `env.server.ts` (`import "server-only"` + zod) — split per risk 4.5.
+    - `query.ts` (one `QueryClient` per request on server, one per tab on browser), `utils.ts` (`cn()`, `invariant()`).
+  - `src/hooks/`:
+    - `useDaemonConnection(workspaceId)` — bridges React lifecycle to `DaemonConnection`; `POST /sessions` → store the response → `connect()` → `rpc("system.ping", {})` → store the pong; tears down on unmount.
+    - `useWorkspace.ts` — TanStack Query wrappers: `useMe`, `useWorkspaces`, `useWorkspace(id)`, `useCreateWorkspace`, `useCreateSession(workspaceId)`. Each reads the Supabase access token via `createBrowserClient().auth.getSession()` and attaches it as Bearer.
+  - `src/stores/connection.ts` — Zustand store: `status`, `sessionToken`, `daemonUrl`, `expiresAt`, `lastError`, `lastPong`, plus the corresponding setters and a `reset()`.
+  - `src/types/workspace.ts` — hand-rolled DTOs mirroring `backend/api/{workspaces,sessions,auth}.py`. Replace with OpenAPI-derived once `/openapi.json` is wired through `make proto`.
+  - `src/styles/globals.css` — `@import "tailwindcss"`; `.monaco-host` / `.xterm-host` rules that keep the panes flush in their grid cells.
+  - `tests/unit/daemon.test.ts` (8 cases against a `FakeWebSocket` test double), `connection-store.test.ts` (5), `auth.test.ts` (2 — env shape, factory surface).
+  - `tests/e2e/ping.spec.ts` — ★ Phase-5 integration gate: Supabase password-grant programmatic sign-in (no magic-link email needed), navigate to `/workspaces/<id>`, assert `[data-testid=connection-pill][data-status=ready]` within 15 s. CI runs it; local dev runs it via `playwright.config.ts::webServer`.
+  - `playwright.config.ts`, `vitest.config.ts`, `postcss.config.mjs`, `.prettierrc.json`, `.env.example`, `.gitignore`, `vercel.json`, `Makefile` (delegates to pnpm so root `run_if_exists` picks it up), `README.md` (layout, env table, Monaco self-host upgrade path for risk 4.7), `public/favicon.svg`.
+
+### Modified
+
+- **`.github/workflows/frontend.yml`** — awakened. Build job now runs `proto/codegen/ts.sh`, `pnpm install --frozen-lockfile`, lint, typecheck, `next build` (with CI placeholder `NEXT_PUBLIC_*` so `lib/env.client.ts`'s zod parse succeeds), and Vitest. New `e2e` job (gated on `vars.RUN_E2E == 'true'`) spins up the full Pattern-B stack — postgres service container, Go 1.23 build of the daemon, Poetry install + Alembic upgrade + uvicorn in background, daemon binary in background, frontend dev server in background, Playwright chromium. Mirrors the Phase-4 backend.yml integration-gate shape but spans one more process. Required CI secrets/vars are tabulated in the completion doc.
+- **`package.json` (repo root)** — added `"pnpm": { "overrides": { "@types/react": "^19.0.0", "@types/react-dom": "^19.0.0" } }` so transitive `peerDeps: @types/react@^18` declarations don't shadow the React-19 typings the frontend uses (risk 4.8). Touched only the bottom of the file; no other root state changed.
+
+### Removed / Moved
+
+- **`docs/executing/phase-5-frontend-plan.md`** → **`docs/archive/phase-5-frontend-plan.md`** — same archival move Phase 3 and Phase 4 made on completion; `docs/executing/` is for in-flight plans only.
+
+### Decisions
+
+- **Next.js 15 + React 19 + App Router + Tailwind 4 ✅ confirmed.** App Router everywhere; two server components (`page.tsx` for `/`, `page.tsx` for `/workspaces/[id]`) RSC-fetch from the backend; everything else is `"use client"`. Monaco + xterm always come through `dynamic({ ssr: false })` — risk 4.1 codified as structural pattern in `EditorPane.tsx` / `TerminalPane.tsx`.
+- **`@supabase/ssr` (httpOnly-cookie sessions) over plain `@supabase/supabase-js` ✅ confirmed.** Three factories in `lib/auth.ts` for the three render contexts (browser / server / middleware); `getAccessTokenFromCookies(cookieStore)` is the helper RSCs use to attach `Authorization: Bearer` to backend calls without leaking the JWT to client code.
+- **`@monaco-editor/react` v4 with the CDN loader ✅ confirmed.** Self-host upgrade path (risk 4.7) documented in `frontend/README.md` and deferred — bundling Monaco's workers through Turbopack is its own minefield.
+- **`@xterm/*` v5 with fit + web-links addons ✅ confirmed.** WebGL/canvas renderers and `addon-search` are Phase-N additions.
+- **Hand-rolled `lib/daemon.ts`, no WS library ✅ confirmed — the load-bearing piece.** `partysocket`/`socket.io`/`nanostream` all rejected: either no leverage over `id`-correlation, or wire framing the daemon doesn't speak. The wrapper is framework-agnostic (no React, no TanStack) so it's testable in pure Vitest with a fake WebSocket; the React adapter is `useDaemonConnection`.
+- **TanStack Query for HTTP + Zustand for client-only state ✅ confirmed.** No Redux, no Jotai. The query client's `retry` function bails on `/^API 401/` so middleware-bounced calls don't loop.
+- **NEW — Minimal shadcn surface (just `Button`) ⚠ refined.** Plan §0.7 named six components; v1 ships only Button (the only one used by `WorkspaceCreateButton` and `sign-in/page.tsx`). The rest land when a real consumer needs them (Phase 6+).
+- **NEW — Split `env.client.ts` / `env.server.ts` ⚠ refined.** Plan §step-1 sketched a single `lib/env.ts`. Risk 4.5's catch — server-only secrets only fail at runtime when imported on the server — is closed structurally: `env.server.ts` has `import "server-only"` (Next's compile-time trip-wire) and the ESLint `no-restricted-imports` rule (lint-time guard). Together they make the leak path unreachable.
+- **NEW — Programmatic Playwright sign-in via Supabase password-grant ⚠ refined.** Plan §step-6 said "magic-link a seeded user." Playwright can't drive an inbox; the spec POSTs to Supabase's password-grant endpoint, plants the `sb-<project>-auth-token` cookie that `@supabase/ssr` reads, and proceeds. CI secrets table covers the seeded-user setup.
+- **NEW — `?token=…` URL append owned by the wrapper, not the caller ⚠ refined.** `DaemonConnection({ url, token })` + `appendTokenIfMissing()` so callers pass the daemon URL straight from the backend and refresh cycles can rewrite `token` without rewriting the URL.
+
+### Cross-cutting: Pattern-B auth loop is now end-to-end browser-driven
+
+- The same EdDSA JWT shape the Phase-4 integration gate proved against Python's `websockets` is now consumed by Chromium. `types/workspace.ts::SessionResponse` matches `backend/api/sessions.py::SessionOut` field-for-field (`daemon_url`, `token`, `expires_at`); `DaemonConnection` reads only those three.
+- Capability scoping is enforced from the same call-site: `useCreateSession` → backend's `mint_token(..., scopes=settings.default_scopes)` → `ROMMEL_DEFAULT_SCOPES` env. The browser does not get to pick scopes; the v1 contract is "whatever the broker decided at mint time."
+- Refresh closes the TTL loop. The Phase-4 plan risk 4.6 — "5-minute TTL is shorter than a real editor session" — is now owned by `DaemonConnection.refreshAndReopen`. One `POST /workspaces/:id/sessions` + a transparent socket re-open; the UI sees `ready → reconnecting → ready` for one frame.
+- **Production reachability remains the named gap (risk 4.4).** `https://rommel.vercel.app` cannot open `ws://localhost:7777`, and `wss://<wid>.vm.rommel-workspaces.internal:7777` is Fly-private — the browser cannot resolve it. The dev story works; the prod cutover needs the Phase-5.5 Flycast `wss://` proxy.
+
+### Verification
+
+```sh
+# Hermetic unit suite (no daemon, no backend, no network):
+cd frontend
+pnpm install
+pnpm test:unit
+# expected: daemon.test.ts (8), connection-store.test.ts (5), auth.test.ts (2) — all green
+
+# Local boot:
+pnpm dev    # http://localhost:3000
+
+# Three-terminal integration gate (recipe in docs/completions/phase-5-frontend.md §Verification):
+#   T1: make -C sandbox-daemon run-local  (ed25519 pubkey baked in env)
+#   T2: docker compose up -d postgres && make -C backend migrate run
+#   T3: pnpm --filter ./frontend dev
+# Browser: sign in → create workspace → open it → ConnectionPill flips to "ready"
+#          DevTools shows WS frame to ws://localhost:7777/ws?token=... and the pong response.
+```
+
+The **live first execution** of `pnpm install` (which writes the lockfile), `next build`, and the Playwright spec is the carryover — same shape as Phase 3's deferred `fly machine run` and Phase 4's deferred `fly deploy`. Each one is a single network-enabled session away.
+
+### Next
+
+Per [`docs/executing/scaffolding-plan.md`](./executing/scaffolding-plan.md) §6+: the next phase opens the first wave of *real* daemon primitives lighting up the IDE shell — either the `.rommel/` funnel UI (Layer 2 of `docs/vision.md`) or the `fs.list`/`fs.read`/`fs.write` wiring that makes the file tree and editor real. Both are unblocked: every primitive the daemon implements is one `DaemonConnection.rpc(type, payload)` call away.
+
+Carryover follow-ups (small, do-anywhere): first `vercel link` + prod deploy; flip `vars.RUN_E2E` once Supabase test-user secrets land; **Phase-5.5 Flycast `wss://` proxy** for production WS reachability (risk 4.4 — the load-bearing prod-cutover item); replace `types/workspace.ts` with OpenAPI-derived types once `/openapi.json` is published via `make proto`.
+
+---
+
+
 
 **Phase 4 — `backend/` FastAPI control plane.** Completion doc: [`docs/completions/phase-4-backend.md`](./completions/phase-4-backend.md). Plan: [`docs/executing/phase-4-backend-plan.md`](./executing/phase-4-backend-plan.md).
 

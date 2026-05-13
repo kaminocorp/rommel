@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  background: rgb(15 15 17);
+  color: rgb(229 231 235);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+}
+
+/* Monaco resets the cursor on mount; keep its frame snug. */
+.monaco-host {
+  min-height: 0;
+  height: 100%;
+}
+
+/* xterm needs an explicit pixel height for fit-addon to compute rows. */
+.xterm-host {
+  min-height: 0;
+  height: 100%;
+  background: rgb(15 15 17);
+}
