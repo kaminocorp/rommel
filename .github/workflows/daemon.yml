@@ -34,7 +34,9 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.gate.outputs.scaffolded == 'true'
         with:
-          go-version: "1.22"
+          # 1.23 minimum: upstream go-jsonschema@v0.18.0 (invoked by go.sh)
+          # raised its toolchain floor (flagged in phase-3-workspace-image.md).
+          go-version: "1.23"
           cache-dependency-path: sandbox-daemon/go.sum
 
       # The Go proto client (proto/clients/go/gen/) is gitignored — it's

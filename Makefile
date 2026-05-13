@@ -3,7 +3,7 @@
 # Subtrees are added incrementally as they're scaffolded; targets that reference a missing
 # subtree no-op with a friendly note rather than failing the whole pipeline.
 
-.PHONY: help bootstrap proto dev lint test build clean
+.PHONY: help bootstrap proto dev lint test build clean migrate
 .DEFAULT_GOAL := help
 
 # --- helpers ----------------------------------------------------------------
@@ -26,6 +26,7 @@ help:
 	@echo "  make lint        run all linters"
 	@echo "  make test        run all tests"
 	@echo "  make build       build everything (no deploy)"
+	@echo "  make migrate     apply backend DB migrations (alembic upgrade head)"
 	@echo "  make clean       remove build artifacts across subtrees"
 
 # --- bootstrap --------------------------------------------------------------
@@ -66,6 +67,9 @@ build:
 	$(call run_if_exists,backend,build,build)
 	$(call run_if_exists,sandbox-daemon,build,build)
 	$(call run_if_exists,workspace-image,build,build)
+
+migrate:
+	$(call run_if_exists,backend,migrate,migrate)
 
 clean:
 	$(call run_if_exists,frontend,clean,clean)

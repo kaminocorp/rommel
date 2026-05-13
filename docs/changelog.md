@@ -4,10 +4,103 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ## Index
 
+- [**0.1.4** — 2026-05-13](#014--2026-05-13) — `backend/`: FastAPI control plane — Supabase auth seam, EdDSA session-token broker, workspace CRUD, Fly orchestrator stub. Integration gate green: backend signs → daemon verifies → ping round-trips.
 - [**0.1.3** — 2026-05-13](#013--2026-05-13) — `workspace-image/`: Fly Machine VM image — baked daemon binary, EdDSA pubkey, `git`/`curl`/`tini`; canonical Dockerfile.
 - [**0.1.2** — 2026-05-12](#012--2026-05-12) — `sandbox-daemon/`: Go WS server with EdDSA token validation, `system.ping`, and real `fs.read`.
 - [**0.1.1** — 2026-05-04](#011--2026-05-04) — `proto/` source-of-truth + codegen for TS/Go/Pydantic; session token contract committed.
 - [**0.1.0** — 2026-05-04](#010--2026-05-04) — Repo root scaffolding: monorepo plumbing, defensive CI, no subtree code yet.
+
+---
+
+## 0.1.4 — 2026-05-13
+
+**Phase 4 — `backend/` FastAPI control plane.** Completion doc: [`docs/completions/phase-4-backend.md`](./completions/phase-4-backend.md). Plan: [`docs/executing/phase-4-backend-plan.md`](./executing/phase-4-backend-plan.md).
+
+Status: ✅ Integration gate green locally. The Python `services.session_broker.mint_token()` produces an EdDSA JWT that the actual `sandbox-daemon` binary (built off Phase-2 source) accepts on `/ws?token=…` and round-trips `system.ping` against; a wrong-`wid` token is rejected at the WS upgrade with HTTP 401. The full Pattern-B auth loop — signer → verifier — is operational end-to-end. Fly-side `fly deploy` from `backend/` is deferred to first cloud deploy (no `fly auth login` in this session; recipe is in `backend/README.md`).
+
+### Added
+
+- **`backend/`** subtree:
+  - `pyproject.toml` — Poetry; FastAPI, uvicorn, pydantic, pydantic-settings, SQLAlchemy 2.0 (`+asyncio`), asyncpg, psycopg 3 (sync, for Alembic only), Alembic, `PyJWT[crypto]`, cryptography, httpx, structlog, cachetools. Dev: pytest, pytest-asyncio, Ruff, websockets. Python `^3.12`.
+  - `api/` — `main.py` (app factory + lifespan), `config.py` (`Settings` with `env_prefix=ROMMEL_`, `@lru_cache get_settings()`, `alembic_url` property that strips `+asyncpg`), `deps.py` (`get_db` / `get_db_for_user` with `SET LOCAL rommel.user_id` in a `session.begin()` block / `get_current_user`), `health.py` (GET /healthz), `auth.py` (GET /auth/me, POST /auth/logout), `workspaces.py` (POST/GET/DELETE CRUD), `sessions.py` (POST /workspaces/:id/sessions; refresh stub returns 501), `policy.py` (GET /policy — empty bundle stub).
+  - `services/` — `auth.py` (Supabase JWKS RS256 validator + `UserClaims`; `TTLCache` for JWKS with one-shot retry on `kid` miss to handle key rotation), `session_broker.py` (`mint_token()`; iat/exp derived from a single `datetime.now(UTC)` per risk 4.5), `workspace_lifecycle.py`, `fly_orchestrator.py` (httpx client over Fly Machines API; empty-token "dev stub" mode returns deterministic `stub-<hex>` machine ids; `metadata.label = wid` so `.internal` DNS resolves).
+  - `repositories/` — `base.py` (Protocols + dataclasses), `postgres/engine.py` (per-URL-cached async engine + session_factory), `postgres/users.py` (upsert via `INSERT … ON CONFLICT DO UPDATE SET supabase_sub = EXCLUDED.supabase_sub … RETURNING *` so RETURNING fires on conflict), `postgres/workspaces.py` (CRUD).
+  - `models/tables.py` — SQLAlchemy 2.0 Core metadata for `users` + `workspaces`, with a stable naming convention so Alembic autogen doesn't drift.
+  - `alembic.ini` (sqlalchemy.url left blank), `alembic/env.py` (reads `Settings.alembic_url`; uses sync driver per risk 4.1), `alembic/versions/0001_init.py` — tables, `app_user` Postgres role (idempotent `DO $$ … IF NOT EXISTS …`), grants, `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY` (defense-in-depth so even the owner is RLS-bound), and four policies (`users_self_*`, `workspaces_owner_*`) keyed off `current_setting('rommel.user_id', true)`.
+  - `policy/rules.py` — `current_bundle()` returns `{"version": 0, "rules": []}` for v1.
+  - `tests/` — `conftest.py` (session-scoped Ed25519 keypair, `test_settings` monkeypatched env, FastAPI `client` with `get_current_user` / `get_db_for_user` overridden, `daemon_subprocess` fixture that builds `sandbox-daemon/dist/sandbox-daemon` on first use and spawns it on a free port, `require_postgres` skip-gate), `test_health.py`, `test_auth.py` (hermetic JWKS happy-path + expired + 401-without-bearer), `test_sessions.py` (★ integration gate + wrong-wid rejection + claim-shape vs `session-token.json` schema + single-`now()` invariant + Ed25519 PEM smoke), `test_workspaces.py` (orchestrator stub mode + policy endpoint).
+  - `Makefile` — `bootstrap` / `run` / `lint` / `test` / `build` (no-op; image handles packaging) / `migrate` / `migrate-new` / `deploy`.
+  - `Dockerfile` — `python:3.12-slim` + `curl` + Poetry; layered dep install; `uvicorn api.main:app --host 0.0.0.0 --port 8080`. Build context is the subtree, not repo root (no proto codegen needed at backend build time — the Python client is published as a wheel; reused via direct import in v1).
+  - `fly.toml` — `app = "rommel-backend"`, `internal_port = 8080`, `http_service.checks` against `/healthz`, `[deploy] release_command = "alembic upgrade head"` (one transient machine, blocks rollout — risk 4.6/§0.7 of the plan: never autogen on boot).
+  - `compose.yaml` — `postgres:16-alpine` with `pg_isready` healthcheck.
+  - `.env.example` — every `ROMMEL_*` env documented.
+  - `README.md` — layout, dev recipe, deploy recipe, full risk-mitigation table.
+
+### Modified
+
+- **`.github/workflows/backend.yml`** — woke up. Adds a `postgres:16-alpine` service container (RLS won't run on SQLite), installs Go 1.23, builds the daemon binary for the integration gate, installs Poetry, runs `alembic upgrade head` + `ruff check` + `pytest`. Path-filters extended to include `sandbox-daemon/**` (because the integration gate depends on the daemon binary).
+- **`.github/workflows/daemon.yml`** — `actions/setup-go@v5` `go-version`: `"1.22"` → `"1.23"`. This is the follow-up the Phase-3 completion doc flagged (`proto/codegen/go.sh` invokes `go-jsonschema@v0.18.0`, which requires Go ≥ 1.23). Comment added in-file pointing at `phase-3-workspace-image.md` for context.
+- **`.github/workflows/proto.yml`** — same setup-go bump for the same reason.
+- **Top-level `Makefile`** — added `migrate` target (delegates to `backend/`); listed it in `help`. The existing `run_if_exists` helper keeps `build`/`lint`/`test` working unchanged.
+
+### Removed
+
+None.
+
+### Decisions
+
+- **SQLAlchemy 2.0 Core + asyncpg + Alembic.** Plan 0.1 confirmed as-is. Repositories use `select() / insert() / delete()` expressions; no ORM session, no string SQL. Async engine cached per-URL in `repositories/postgres/engine.py`.
+- **PyJWT (`^2.9`) with the `[crypto]` extra, not python-jose.** Plan 0.2 confirmed. PyJWT 2.x is actively maintained, audit-friendly (one module vs python-jose's `jwt/jws/jwk/jwe` quartet), and `algorithm="EdDSA"` produces a header compatible with the daemon's golang-jwt `WithValidMethods([]string{"EdDSA"})`.
+- **PEM env-var for the signing key (`ROMMEL_TOKEN_PRIVKEY`), not a mounted file.** Plan 0.3 confirmed. Symmetric with the daemon's `ROMMEL_TOKEN_PUBKEY`, so rotation is one mental model on both sides.
+- **`{daemon_url, token, expires_at}` response with a template-driven URL.** Plan 0.4 confirmed. `ROMMEL_DAEMON_URL_TEMPLATE` interpolates `{wid}`; prod uses `wss://{wid}.vm.rommel-workspaces.internal:7777/ws`, dev uses `ws://localhost:7777/ws`. Business logic doesn't change between environments.
+- **pydantic-settings + Ruff.** Plan 0.5 confirmed. One `Settings` class, one cached factory; Ruff replaces black/flake8/isort.
+- **Ephemeral Postgres for tests, NOT SQLite/Supabase-shadow.** Plan 0.6 confirmed. SQLite can't run RLS at all; the first migration enables it. Tests skip cleanly if Postgres isn't reachable so the non-DB unit suite runs anywhere.
+- **`[deploy] release_command = "alembic upgrade head"`, never on FastAPI boot.** Plan 0.7 confirmed. App boot does no migration work. The release machine is transient and blocks rollout on non-zero exit. The startup-time `alembic heads == DB version` check is deferred (risk vs blast-radius: complicates dev-without-Postgres path more than it buys in v1).
+- **NEW — RLS hardening: `FORCE ROW LEVEL SECURITY` + a dedicated `app_user` role.** Risk 4.2 is the trapdoor Postgres opens by default (table owners are RLS-exempt). The migration installs `app_user` with minimum grants, and *every* table also gets `FORCE ROW LEVEL SECURITY` so even if a misconfigured client connects as the schema owner, policies still fire. Defense in depth, cheap to maintain.
+- **NEW — UsersRepo upsert via `INSERT … ON CONFLICT DO UPDATE SET <col>=EXCLUDED.<col>`.** `DO NOTHING` swallows `RETURNING` for the conflict path; the no-op `DO UPDATE` is the cleanest way to make Postgres return the existing row. No `email` overwrite — keeps a user-edited value safe.
+
+### Cross-cutting: Pattern-B auth loop is now end-to-end operational
+
+Phase 1 committed the contract. Phase 2 made the daemon verify it. Phase 3 baked the verifying pubkey into the image. Phase 4 ships the signer. The properties earned by this phase:
+
+- **Wire compatibility is proven.** The integration-gate transcript captures a real broker→daemon round-trip: the daemon ingests a PyJWT-emitted `EdDSA` JWT and `system.ping` returns the matching response frame. The wrong-`wid` negative case rejects with HTTP 401 at the WS upgrade, as `sandbox-daemon/internal/auth/token.go::Verify` should.
+- **Rotation is tightly coupled to image SHA.** Backend `ROMMEL_TOKEN_PRIVKEY` is a Fly secret; the matching pubkey is baked into the image at `/etc/rommel/token.pubkey`. Rotating either half requires re-deploying that half — they cannot drift apart without breaking the next session creation, which is the property Phase 3 Decision 0.2 was designed for.
+- **Capability scoping is enforced wire-to-wire.** The default scope vocabulary (`ROMMEL_DEFAULT_SCOPES=fs:rw,pty:rw,git:rw,funnel:rw,policy:r`) is what the broker stamps onto fresh tokens; the daemon's per-route `RequiredScope` table is the matching enforcement point. Both halves cite the same enum (`proto/schemas/session-token.json`).
+
+### Verification
+
+```sh
+# Hermetic Python smoke (signer + claim-shape; runs without Postgres or daemon):
+cd backend
+poetry install
+poetry run pytest -q tests/test_health.py tests/test_auth.py tests/test_workspaces.py \
+                    tests/test_sessions.py::test_broker_claim_shape_matches_proto_schema \
+                    tests/test_sessions.py::test_broker_signature_verifies_with_public_key \
+                    tests/test_sessions.py::test_broker_uses_single_now_for_iat_and_exp
+
+# Full integration gate (needs Go toolchain + Postgres):
+docker compose up -d postgres
+poetry run alembic upgrade head
+poetry run pytest -q tests/test_sessions.py::test_broker_signs_token_daemon_accepts \
+                    tests/test_sessions.py::test_daemon_rejects_token_with_wrong_wid
+```
+
+The integration-gate transcript captured live in this session (full output in [`docs/completions/phase-4-backend.md`](./completions/phase-4-backend.md) §Verification):
+
+```
+daemon up on :53605 (wid=smoke-2375143b)
+INTEGRATION GATE PASS — backend signs → daemon verifies → ping round-trips
+frame: { "kind": "response", "type": "system.ping", "id": "...", "payload": { "ok": true, "ts": "..." } }
+wrong-wid: rejected: InvalidStatus: server rejected WebSocket connection: HTTP 401
+```
+
+Deferred: first `fly deploy` of `rommel-backend` (needs `fly auth login` + `fly apps create`; recipe in `backend/README.md`).
+
+### Next
+
+Per [`docs/executing/scaffolding-plan.md`](./executing/scaffolding-plan.md) §5: **`frontend/`** — the browser IDE. Newly unblocked: real `POST /workspaces/:id/sessions` to call, fixed `{daemon_url, token, expires_at}` response shape, the daemon's `/ws?token=…` upgrade reachable from the browser with the token the backend just minted. Phase-5 is the last scaffolding phase before the Layer-2 funnel UI work begins.
+
+Carryover follow-ups (small, do-anywhere): first `fly deploy` of the backend; implement `POST /sessions/:id/refresh` once frontend sessions need to outlive the 5-minute TTL; wire workspace `status` transitions through the orchestrator's start/stop callbacks.
 
 ---
 

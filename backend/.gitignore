@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Env files (top-level .gitignore covers these too; duplicated here so the
+# subtree is self-contained if extracted).
+.env.local
+.env.*.local
+
+# Poetry artifacts
+dist/
+*.egg-info/
+
+# Generated proto Python client is gitignored from repo-root .gitignore; we
+# import via the editable install declared in pyproject.toml.

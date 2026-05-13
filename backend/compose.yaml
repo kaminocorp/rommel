@@ -1,0 +1,26 @@
+# Local Postgres for tests + dev. Production uses Supabase Postgres.
+#
+# The Phase-4 plan rejects SQLite (can't run RLS) and Supabase-shadow (needs
+# network + per-developer credentials). A single local container is enough for
+# CI + the inner-loop dev cycle.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rommel-postgres
+    environment:
+      POSTGRES_USER: rommel
+      POSTGRES_PASSWORD: rommel
+      POSTGRES_DB: rommel
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rommel"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - rommel_pg_data:/var/lib/postgresql/data
+
+volumes:
+  rommel_pg_data:

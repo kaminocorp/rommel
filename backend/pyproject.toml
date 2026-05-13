@@ -1,0 +1,59 @@
+[tool.poetry]
+name = "rommel-backend"
+version = "0.1.4"
+description = "Rommel ADE control plane — auth, workspace lifecycle, and the EdDSA session-token broker that the workspace daemon validates."
+authors = ["Rommel ADE"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.115"
+uvicorn = { version = "^0.32", extras = ["standard"] }
+pydantic = "^2.6"
+pydantic-settings = "^2.5"
+sqlalchemy = { version = "^2.0", extras = ["asyncio"] }
+asyncpg = "^0.29"
+# psycopg 3 is used only by Alembic (sync driver); the app uses asyncpg.
+psycopg = { version = "^3.2", extras = ["binary"] }
+alembic = "^1.13"
+# `crypto` extra is required for EdDSA (Ed25519); without it PyJWT raises
+# NotImplementedError on `algorithm="EdDSA"`. See risk 4.3 of the Phase-4 plan.
+PyJWT = { version = "^2.9", extras = ["crypto"] }
+cryptography = "^43"
+httpx = "^0.27"
+structlog = "^24"
+cachetools = "^5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+pytest-asyncio = "^0.24"
+ruff = "^0.6"
+# Used by the integration-gate test to open a WebSocket to the spawned daemon.
+websockets = "^13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S", "C4", "SIM"]
+ignore = [
+  # Asserts in tests are fine.
+  "S101",
+  # Subprocess calls in the integration test are gated behind a fixture.
+  "S603", "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+"alembic/versions/**" = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

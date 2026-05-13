@@ -1,0 +1,45 @@
+app = "rommel-backend"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Migrations run once per deploy, on a transient release machine. Blocks
+# rollout if non-zero exit — exactly the gate we want for schema changes
+# (plan §0.7: never autogen migrations on boot).
+[deploy]
+  release_command = "alembic upgrade head"
+  strategy = "rolling"
+
+[env]
+  ROMMEL_FLY_WORKSPACES_APP = "rommel-workspaces"
+  # ROMMEL_DAEMON_URL_TEMPLATE is set via `fly secrets` so the prod / staging
+  # templates can differ without code changes.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "2s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
+
+[processes]
+  app = "uvicorn api.main:app --host 0.0.0.0 --port 8080"
