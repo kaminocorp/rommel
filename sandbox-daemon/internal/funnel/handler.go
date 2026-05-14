@@ -14,7 +14,6 @@
 package funnel
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -68,7 +67,7 @@ type Handler struct {
 }
 
 // List implements funnel.list.
-func (h *Handler) List(_ context.Context, _ *protogen.SessionTokenClaims, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+func (h *Handler) List(_ ws.HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 	var req protogen.FunnelListRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, errBody(ws.ErrCodeBadRequest, "funnel.list: invalid payload: "+err.Error())
@@ -117,7 +116,7 @@ func (h *Handler) List(_ context.Context, _ *protogen.SessionTokenClaims, payloa
 }
 
 // Read implements funnel.read.
-func (h *Handler) Read(_ context.Context, _ *protogen.SessionTokenClaims, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+func (h *Handler) Read(_ ws.HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 	var req protogen.FunnelReadRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, errBody(ws.ErrCodeBadRequest, "funnel.read: invalid payload: "+err.Error())
@@ -158,7 +157,7 @@ func (h *Handler) Read(_ context.Context, _ *protogen.SessionTokenClaims, payloa
 }
 
 // Promote implements funnel.promote. Atomic os.Rename on POSIX.
-func (h *Handler) Promote(_ context.Context, _ *protogen.SessionTokenClaims, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+func (h *Handler) Promote(_ ws.HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 	var req protogen.FunnelPromoteRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, errBody(ws.ErrCodeBadRequest, "funnel.promote: invalid payload: "+err.Error())

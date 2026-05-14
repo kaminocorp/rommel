@@ -6,8 +6,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"time"
+	"sync"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/rommel-ade/rommel/sandbox-daemon/internal/auth"
@@ -15,13 +16,38 @@ import (
 	protogen "github.com/rommel-ade/rommel/proto/clients/go/gen"
 )
 
+// Publisher is the seam handlers use to emit server-pushed events (e.g.
+// pty.output, pty.exit, fs.watch-event). The pump implementation behind it
+// applies drop-oldest backpressure — see internal/ws/pump.go. Payload must
+// already be JSON-marshalled; the publisher wraps it in an event envelope.
+//
+// Returns false if the frame was dropped (either right now because the buffer
+// was full, or eventually because the connection terminated). Handlers can
+// surface drops to the client — the PTY handler emits pty.output_dropped.
+type Publisher interface {
+	Publish(eventType string, payload []byte) bool
+}
+
+// HandlerCtx is the per-request context passed to every HandlerFunc. The
+// signature was bare context.Context through Phase 6; Phase 7 promotes it to
+// a struct so streaming primitives can emit events (Publisher) and so
+// connection-scoped state (ConnID — tagged on resources the handler owns)
+// can be cleaned up at disconnect time.
+type HandlerCtx struct {
+	Ctx       context.Context
+	Claims    *protogen.SessionTokenClaims
+	Publisher Publisher
+	ConnID    string
+}
+
 // HandlerFunc is the contract for one primitive. It receives the request
 // payload as raw JSON (handlers unmarshal into their own typed shape) and
 // returns either a response payload (marshalled to JSON) or an error envelope.
 //
-// Returning (nil, nil) is treated as a fire-and-forget — currently unused, but
-// reserved for primitives that ack-via-event (e.g. pty.input).
-type HandlerFunc func(ctx context.Context, claims *protogen.SessionTokenClaims, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError)
+// Returning (nil, nil) is a fire-and-forget signal — no response frame is
+// written. Used by pty.input (errors still come back via the error envelope
+// correlated by request id; success is silent).
+type HandlerFunc func(hc HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError)
 
 // Route binds a primitive name to its handler plus its capability requirement.
 // RequiredScope is any-of: if non-empty, the token must carry at least one
@@ -31,10 +57,20 @@ type Route struct {
 	Fn            HandlerFunc
 }
 
+// ConnLifecycle is implemented by handlers that own per-connection resources
+// (currently just the PTY handler — PTYs are tagged with the connection that
+// opened them and SIGTERMed when that connection drops). Handlers that
+// implement this are passed into Server via WithLifecycle so runConn can call
+// OnDisconnect during its deferred cleanup.
+type ConnLifecycle interface {
+	OnDisconnect(connID string)
+}
+
 type Server struct {
-	cfg    *config.Config
-	routes map[string]Route
-	up     websocket.Upgrader
+	cfg        *config.Config
+	routes     map[string]Route
+	lifecycles []ConnLifecycle
+	up         websocket.Upgrader
 }
 
 func NewServer(cfg *config.Config, routes map[string]Route) *Server {
@@ -50,6 +86,13 @@ func NewServer(cfg *config.Config, routes map[string]Route) *Server {
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
 	}
+}
+
+// WithLifecycle registers a handler-side disconnect callback. Returns the
+// server so the call can chain in main.go.
+func (s *Server) WithLifecycle(l ConnLifecycle) *Server {
+	s.lifecycles = append(s.lifecycles, l)
+	return s
 }
 
 // HandleWS upgrades the connection at /ws?token=<jwt> and runs the per-conn loop.
@@ -86,6 +129,33 @@ func (s *Server) HandleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) runConn(ctx context.Context, conn *websocket.Conn, claims *protogen.SessionTokenClaims) {
+	connID := uuid.NewString()
+
+	// dropCount survives the lifetime of the pump; bumped from the dropFn
+	// closure when frames go on the floor. We log a single warning so an
+	// operator can see saturation without spamming a line per frame.
+	var dropMu sync.Mutex
+	var dropped int
+	pump := startPump(conn, func(_ *Frame) {
+		dropMu.Lock()
+		dropped++
+		dropMu.Unlock()
+	})
+	defer func() {
+		dropMu.Lock()
+		d := dropped
+		dropMu.Unlock()
+		if d > 0 {
+			log.Printf("ws: conn %s dropped %d frames before close", connID, d)
+		}
+		pump.close()
+		for _, l := range s.lifecycles {
+			l.OnDisconnect(connID)
+		}
+	}()
+
+	publisher := &connPublisher{pump: pump}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -105,36 +175,42 @@ func (s *Server) runConn(ctx context.Context, conn *websocket.Conn, claims *prot
 
 		var frame Frame
 		if err := json.Unmarshal(data, &frame); err != nil {
-			s.writeFrame(conn, errorFrame(&Frame{}, ErrCodeBadRequest, "invalid envelope JSON: "+err.Error()))
+			pump.Send(errorFrame(&Frame{}, ErrCodeBadRequest, "invalid envelope JSON: "+err.Error()))
 			continue
 		}
 		if frame.Type == "" {
-			s.writeFrame(conn, errorFrame(&frame, ErrCodeBadRequest, "envelope.type is required"))
+			pump.Send(errorFrame(&frame, ErrCodeBadRequest, "envelope.type is required"))
 			continue
 		}
 		if frame.Kind != protogen.EnvelopeKindRequest {
-			s.writeFrame(conn, errorFrame(&frame, ErrCodeBadRequest, "only kind=request is accepted from the client today"))
+			pump.Send(errorFrame(&frame, ErrCodeBadRequest, "only kind=request is accepted from the client today"))
 			continue
 		}
 
-		out := s.dispatch(ctx, claims, &frame)
-		if out == nil {
-			continue // fire-and-forget
+		hc := HandlerCtx{
+			Ctx:       ctx,
+			Claims:    claims,
+			Publisher: publisher,
+			ConnID:    connID,
 		}
-		s.writeFrame(conn, out)
+		out := s.dispatch(hc, &frame)
+		if out == nil {
+			continue // fire-and-forget (e.g. pty.input)
+		}
+		pump.Send(out)
 	}
 }
 
-func (s *Server) dispatch(ctx context.Context, claims *protogen.SessionTokenClaims, req *Frame) *Frame {
+func (s *Server) dispatch(hc HandlerCtx, req *Frame) *Frame {
 	route, ok := s.routes[req.Type]
 	if !ok {
 		return errorFrame(req, ErrCodeUnknownType, "unknown primitive: "+req.Type)
 	}
-	if !auth.HasAnyScope(claims, route.RequiredScope...) {
+	if !auth.HasAnyScope(hc.Claims, route.RequiredScope...) {
 		return errorFrame(req, ErrCodeForbidden, "token lacks required scope for "+req.Type)
 	}
 
-	payload, errBody := route.Fn(ctx, claims, req.Payload)
+	payload, errBody := route.Fn(hc, req.Payload)
 	if errBody != nil {
 		return &Frame{
 			Kind:  protogen.EnvelopeKindError,
@@ -147,11 +223,4 @@ func (s *Server) dispatch(ctx context.Context, claims *protogen.SessionTokenClai
 		return nil
 	}
 	return response(req, payload)
-}
-
-func (s *Server) writeFrame(conn *websocket.Conn, f *Frame) {
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := conn.WriteJSON(f); err != nil {
-		log.Printf("ws: write error: %v", err)
-	}
 }

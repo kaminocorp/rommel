@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/exit-event.json",
+  "title": "PtyExitEvent",
+  "description": "pty.exit — server-pushed event emitted once when the shell process behind pty_id terminates. exit_code is the wait-status exit code (or -1 if the process died from an uncaught signal); signal is populated when the shell died from a signal rather than exit(N), e.g. SIGKILL from the connection-close cleanup path. Daemon flushes pending pty.output before emitting pty.exit so the FE can replay the final bytes.",
+  "type": "object",
+  "required": ["pty_id", "exit_code"],
+  "properties": {
+    "pty_id": { "type": "string" },
+    "exit_code": {
+      "type": "integer",
+      "description": "Process exit code, or -1 if the process was killed by a signal."
+    },
+    "signal": {
+      "type": "string",
+      "description": "Signal name (e.g. \"SIGTERM\", \"SIGKILL\") when the process died from a signal."
+    }
+  },
+  "additionalProperties": false
+}

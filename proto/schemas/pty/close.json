@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/close.json",
+  "title": "PtyClose",
+  "description": "pty.close — terminate the shell behind pty_id. Daemon SIGTERMs the process group, waits 200 ms, then SIGKILLs survivors. Idempotent: closing an already-closed (or never-opened) pty_id returns success — keeps unmount cleanup simple.",
+  "$defs": {
+    "PtyCloseRequest": {
+      "title": "PtyCloseRequest",
+      "type": "object",
+      "required": ["pty_id"],
+      "properties": {
+        "pty_id": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "PtyCloseResponse": {
+      "title": "PtyCloseResponse",
+      "type": "object",
+      "description": "Empty — the close is fire-and-forget on the server side; the ack just confirms the request was received.",
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/PtyCloseRequest" },
+    { "$ref": "#/$defs/PtyCloseResponse" }
+  ]
+}

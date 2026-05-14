@@ -63,6 +63,10 @@ const INITIAL_BACKOFF_MS = 250;
 const MAX_BACKOFF_MS = 5_000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const EXPIRY_REFRESH_WINDOW_MS = 30_000;
+// notify() registers an inflight slot so daemon-side errors can be matched
+// back to the originating call; the slot is purged this long after send so
+// the map doesn't grow without bound across a long session.
+const NOTIFY_INFLIGHT_TTL_MS = 5_000;
 
 export class DaemonConnection {
   private socket: WebSocket | null = null;
@@ -132,6 +136,39 @@ export class DaemonConnection {
       };
       this.send(frame);
     });
+  }
+
+  // Notify: fire-and-forget request. The daemon writes a response on error
+  // (correlated by id) but not on success. Used by pty.input where the
+  // ergonomics of `void` matter (every keystroke would otherwise mint an
+  // unawaited Promise). We still mint an id so daemon-side errors can be
+  // surfaced — the inflight slot is GC'd after a short window.
+  notify<TReq>(type: string, payload: TReq): void {
+    if (this.closed) return;
+    const id = crypto.randomUUID();
+    this.inflight.set(id, {
+      resolve: () => {
+        /* never called: success is silent on the wire */
+      },
+      reject: (e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Surface as console diagnostic — callers can attach their own
+        // listener via subscribe() to a `pty.error` event if they want
+        // structured handling.
+        console.warn(`daemon notify(${type}) error: ${msg}`);
+      },
+      type,
+    });
+    setTimeout(() => {
+      this.inflight.delete(id);
+    }, NOTIFY_INFLIGHT_TTL_MS);
+    const frame: Envelope = {
+      kind: "request",
+      type,
+      id,
+      payload: payload as Record<string, unknown>,
+    };
+    this.send(frame);
   }
 
   // Subscribe to server-pushed events of a given `type` (e.g. "pty.output",

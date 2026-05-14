@@ -9,6 +9,8 @@ require (
 	github.com/rommel-ade/rommel/proto/clients/go v0.0.0-00010101000000-000000000000
 )
 
+require github.com/creack/pty v1.1.24 // indirect
+
 // Until a top-level go.work lands, point at the in-tree generated client.
 // The proto Go client is regenerated from proto/schemas/ via `make proto`
 // (or proto/codegen/go.sh in CI).

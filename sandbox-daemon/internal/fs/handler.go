@@ -9,7 +9,6 @@
 package fs
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -29,7 +28,7 @@ type Handler struct {
 }
 
 // Read implements fs.read.
-func (h *Handler) Read(_ context.Context, _ *protogen.SessionTokenClaims, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+func (h *Handler) Read(_ ws.HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 	var req protogen.FsReadRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, errBody(ws.ErrCodeBadRequest, "fs.read: invalid payload: "+err.Error())
@@ -92,7 +91,7 @@ func (h *Handler) Read(_ context.Context, _ *protogen.SessionTokenClaims, payloa
 
 // List implements fs.list. One level deep, sorted by name. Hidden files
 // included.
-func (h *Handler) List(_ context.Context, _ *protogen.SessionTokenClaims, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+func (h *Handler) List(_ ws.HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 	var req protogen.FsListRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, errBody(ws.ErrCodeBadRequest, "fs.list: invalid payload: "+err.Error())
@@ -155,7 +154,7 @@ func (h *Handler) List(_ context.Context, _ *protogen.SessionTokenClaims, payloa
 
 // Write implements fs.write. Full-content overwrite. Parent directory must
 // already exist (fs.mkdir is a separate primitive — not yet implemented).
-func (h *Handler) Write(_ context.Context, _ *protogen.SessionTokenClaims, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+func (h *Handler) Write(_ ws.HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 	var req protogen.FsWriteRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, errBody(ws.ErrCodeBadRequest, "fs.write: invalid payload: "+err.Error())
@@ -218,7 +217,7 @@ func (h *Handler) Write(_ context.Context, _ *protogen.SessionTokenClaims, paylo
 // NotImplemented is the stub returned for primitives that don't have a real
 // handler yet (fs.watch in v1).
 func (h *Handler) NotImplemented(verb string) ws.HandlerFunc {
-	return func(_ context.Context, _ *protogen.SessionTokenClaims, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+	return func(_ ws.HandlerCtx, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 		return nil, errBody(ws.ErrCodeNotImplemented, verb+": not implemented")
 	}
 }

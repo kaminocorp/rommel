@@ -41,7 +41,17 @@ const (
 	ErrCodeFunnelInvalidTransition = "funnel.invalid_transition"
 	ErrCodeFunnelNotFound          = "funnel.not_found"
 	ErrCodeFunnelIO                = "funnel.io"
+
+	ErrCodePtyNotFound     = "pty.not_found"
+	ErrCodePtySpawnFailed  = "pty.spawn_failed"
+	ErrCodePtyWriteFailed  = "pty.write_failed"
+	ErrCodePtyInvalidSize  = "pty.invalid_size"
+	ErrCodePtyLimitReached = "pty.limit_reached"
 )
+
+// eventKind is the envelope.kind for server-pushed events. Promoted out of a
+// literal so the pump and the publishers stay in agreement.
+const eventKind = protogen.EnvelopeKindEvent
 
 // response builds a success envelope echoing the request id and type.
 func response(req *Frame, payload json.RawMessage) *Frame {

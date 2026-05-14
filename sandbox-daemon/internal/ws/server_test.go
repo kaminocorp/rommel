@@ -1,9 +1,9 @@
 package ws_test
 
 import (
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,6 +23,7 @@ import (
 	"github.com/rommel-ade/rommel/sandbox-daemon/internal/config"
 	fsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/fs"
 	funnelx "github.com/rommel-ade/rommel/sandbox-daemon/internal/funnel"
+	ptyx "github.com/rommel-ade/rommel/sandbox-daemon/internal/pty"
 	wsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/ws"
 )
 
@@ -33,6 +34,7 @@ type harness struct {
 	priv ed25519.PrivateKey
 	cfg  *config.Config
 	root string
+	pty  *ptyx.Handler
 }
 
 func newHarness(t *testing.T) *harness {
@@ -54,11 +56,13 @@ func newHarness(t *testing.T) *harness {
 
 	fsh := &fsx.Handler{Root: cfg.WorkspaceRoot}
 	funh := &funnelx.Handler{Root: filepath.Join(cfg.WorkspaceRoot, "rommel")}
+	ptyh := ptyx.New(cfg.WorkspaceRoot)
 	fsR := []protogen.SessionTokenClaimsScopeElem{
 		protogen.SessionTokenClaimsScopeElemFsR,
 		protogen.SessionTokenClaimsScopeElemFsRw,
 	}
 	fsRw := []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemFsRw}
+	ptyRw := []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemPtyRw}
 	funnelR := []protogen.SessionTokenClaimsScopeElem{
 		protogen.SessionTokenClaimsScopeElemFunnelR,
 		protogen.SessionTokenClaimsScopeElemFunnelRw,
@@ -66,7 +70,7 @@ func newHarness(t *testing.T) *harness {
 	funnelRw := []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemFunnelRw}
 
 	routes := map[string]wsx.Route{
-		"system.ping": {Fn: func(_ context.Context, _ *protogen.SessionTokenClaims, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+		"system.ping": {Fn: func(_ wsx.HandlerCtx, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 			return json.RawMessage(`{"ok":true}`), nil
 		}},
 		"fs.read":        {RequiredScope: fsR, Fn: fsh.Read},
@@ -75,9 +79,13 @@ func newHarness(t *testing.T) *harness {
 		"funnel.list":    {RequiredScope: funnelR, Fn: funh.List},
 		"funnel.read":    {RequiredScope: funnelR, Fn: funh.Read},
 		"funnel.promote": {RequiredScope: funnelRw, Fn: funh.Promote},
+		"pty.open":       {RequiredScope: ptyRw, Fn: ptyh.Open},
+		"pty.input":      {RequiredScope: ptyRw, Fn: ptyh.Input},
+		"pty.resize":     {RequiredScope: ptyRw, Fn: ptyh.Resize},
+		"pty.close":      {RequiredScope: ptyRw, Fn: ptyh.Close},
 	}
 
-	srv := wsx.NewServer(cfg, routes)
+	srv := wsx.NewServer(cfg, routes).WithLifecycle(ptyh)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.HandleHealth)
 	mux.HandleFunc("/ws", srv.HandleWS)
@@ -85,7 +93,7 @@ func newHarness(t *testing.T) *harness {
 
 	t.Cleanup(func() { ts.Close() })
 
-	return &harness{srv: ts, priv: priv, cfg: cfg, root: root}
+	return &harness{srv: ts, priv: priv, cfg: cfg, root: root, pty: ptyh}
 }
 
 // mintToken signs a valid JWT for this harness. Optional knobs let individual
@@ -162,18 +170,27 @@ func (h *harness) roundTrip(t *testing.T, conn *websocket.Conn, kind, typ string
 	if err := conn.WriteJSON(frame); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	var out wsx.Frame
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if err := conn.ReadJSON(&out); err != nil {
-		t.Fatalf("read: %v", err)
+	// Skip any pending server-pushed events (kind=event has no id). Phase 7
+	// PTY introduces async pty.output / pty.exit events that can race ahead
+	// of the next response on the wire.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var out wsx.Frame
+		_ = conn.SetReadDeadline(deadline)
+		if err := conn.ReadJSON(&out); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if out.Kind == protogen.EnvelopeKindEvent {
+			continue
+		}
+		if out.ID == nil || *out.ID != id {
+			t.Fatalf("id mismatch: got %v want %s", out.ID, id)
+		}
+		if out.Type != typ {
+			t.Fatalf("type mismatch: got %q want %q", out.Type, typ)
+		}
+		return &out
 	}
-	if out.ID == nil || *out.ID != id {
-		t.Fatalf("id mismatch: got %v want %s", out.ID, id)
-	}
-	if out.Type != typ {
-		t.Fatalf("type mismatch: got %q want %q", out.Type, typ)
-	}
-	return &out
 }
 
 // --- tests ------------------------------------------------------------------
@@ -842,6 +859,273 @@ func TestBadEnvelope_BadRequest(t *testing.T) {
 	if out.Error == nil || out.Error.Code != wsx.ErrCodeBadRequest {
 		t.Fatalf("code: got %+v want %q", out.Error, wsx.ErrCodeBadRequest)
 	}
+}
+
+// --- pty.* ------------------------------------------------------------------
+
+// drainUntil reads frames from conn until predicate returns true, the
+// connection errors, or the timeout elapses. Returns the matched frame and
+// every frame seen along the way (useful for cumulative assertions like
+// "did 'rommel' appear anywhere in the output stream?").
+func drainUntil(t *testing.T, conn *websocket.Conn, timeout time.Duration, pred func(*wsx.Frame) bool) (*wsx.Frame, []*wsx.Frame) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var seen []*wsx.Frame
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, seen
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(remaining))
+		var f wsx.Frame
+		if err := conn.ReadJSON(&f); err != nil {
+			return nil, seen
+		}
+		fc := f
+		seen = append(seen, &fc)
+		if pred(&fc) {
+			return &fc, seen
+		}
+	}
+}
+
+// sendFrame writes a request frame; doesn't wait for a response.
+func sendFrame(t *testing.T, conn *websocket.Conn, typ string, payload any) string {
+	t.Helper()
+	id := uuid.NewString()
+	raw, _ := json.Marshal(payload)
+	frame := wsx.Frame{
+		Kind:    protogen.EnvelopeKindRequest,
+		Type:    typ,
+		ID:      &id,
+		Payload: raw,
+	}
+	if err := conn.WriteJSON(frame); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return id
+}
+
+func TestPty_OpenAndExit(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"pty:rw"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	openResp := h.roundTrip(t, conn, "request", "pty.open", map[string]any{"cols": 80, "rows": 24})
+	if openResp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("open kind: %q (err=%+v)", openResp.Kind, openResp.Error)
+	}
+	var open protogen.PtyOpenResponse
+	if err := json.Unmarshal(openResp.Payload, &open); err != nil {
+		t.Fatalf("unmarshal open: %v", err)
+	}
+	if _, err := uuid.Parse(open.PtyID); err != nil {
+		t.Fatalf("pty_id not a UUID: %q", open.PtyID)
+	}
+
+	// Type "exit 0\n" → shell exits → pty.exit fires with exit_code 0.
+	sendFrame(t, conn, "pty.input", map[string]any{
+		"pty_id": open.PtyID,
+		"data":   base64.StdEncoding.EncodeToString([]byte("exit 0\n")),
+	})
+
+	exit, _ := drainUntil(t, conn, 5*time.Second, func(f *wsx.Frame) bool {
+		return f.Kind == protogen.EnvelopeKindEvent && f.Type == "pty.exit"
+	})
+	if exit == nil {
+		t.Fatalf("never saw pty.exit")
+	}
+	var ev protogen.PtyExitEvent
+	if err := json.Unmarshal(exit.Payload, &ev); err != nil {
+		t.Fatalf("unmarshal exit: %v", err)
+	}
+	if ev.PtyID != open.PtyID {
+		t.Fatalf("exit pty_id: got %q want %q", ev.PtyID, open.PtyID)
+	}
+	if ev.ExitCode != 0 {
+		t.Fatalf("exit_code: got %d want 0 (signal=%v)", ev.ExitCode, ev.Signal)
+	}
+}
+
+func TestPty_InputProducesOutput(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"pty:rw"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	openResp := h.roundTrip(t, conn, "request", "pty.open", map[string]any{"cols": 80, "rows": 24})
+	var open protogen.PtyOpenResponse
+	_ = json.Unmarshal(openResp.Payload, &open)
+
+	// "echo rommel-magic\nexit 0\n" — the shell echoes the command (because
+	// the PTY is in echo-mode) AND prints the output. Both contain
+	// rommel-magic, so we can sanity-check decoded data without fighting
+	// prompt noise.
+	sendFrame(t, conn, "pty.input", map[string]any{
+		"pty_id": open.PtyID,
+		"data":   base64.StdEncoding.EncodeToString([]byte("echo rommel-magic\nexit 0\n")),
+	})
+
+	var accum strings.Builder
+	_, frames := drainUntil(t, conn, 5*time.Second, func(f *wsx.Frame) bool {
+		if f.Kind == protogen.EnvelopeKindEvent && f.Type == "pty.output" {
+			var oe protogen.PtyOutputEvent
+			if json.Unmarshal(f.Payload, &oe) == nil {
+				if b, err := base64.StdEncoding.DecodeString(oe.Data); err == nil {
+					accum.Write(b)
+				}
+			}
+		}
+		return f.Kind == protogen.EnvelopeKindEvent && f.Type == "pty.exit"
+	})
+	if !strings.Contains(accum.String(), "rommel-magic") {
+		t.Fatalf("output never contained 'rommel-magic'; saw %d frames, accum=%q", len(frames), accum.String())
+	}
+}
+
+func TestPty_ResizeRoundTrip(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"pty:rw"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	openResp := h.roundTrip(t, conn, "request", "pty.open", map[string]any{"cols": 80, "rows": 24})
+	var open protogen.PtyOpenResponse
+	_ = json.Unmarshal(openResp.Payload, &open)
+
+	resizeResp := h.roundTrip(t, conn, "request", "pty.resize", map[string]any{
+		"pty_id": open.PtyID, "cols": 120, "rows": 40,
+	})
+	if resizeResp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("resize kind: %q (err=%+v)", resizeResp.Kind, resizeResp.Error)
+	}
+	if string(resizeResp.Payload) != `{}` {
+		t.Fatalf("resize payload: got %q want {}", resizeResp.Payload)
+	}
+}
+
+func TestPty_ResizeInvalidSize(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"pty:rw"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	openResp := h.roundTrip(t, conn, "request", "pty.open", map[string]any{"cols": 80, "rows": 24})
+	var open protogen.PtyOpenResponse
+	_ = json.Unmarshal(openResp.Payload, &open)
+
+	// 9999 > 1000 → invalid_size from codegen's UnmarshalJSON validator;
+	// daemon would surface invalid_size if codegen let it through.
+	resp := h.roundTrip(t, conn, "request", "pty.resize", map[string]any{
+		"pty_id": open.PtyID, "cols": 9999, "rows": 24,
+	})
+	if resp.Error == nil {
+		t.Fatalf("expected error")
+	}
+	if resp.Error.Code != wsx.ErrCodePtyInvalidSize && resp.Error.Code != wsx.ErrCodeBadRequest {
+		t.Fatalf("code: got %+v want pty.invalid_size or bad_request", resp.Error)
+	}
+}
+
+func TestPty_CloseIsIdempotent(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"pty:rw"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	openResp := h.roundTrip(t, conn, "request", "pty.open", map[string]any{"cols": 80, "rows": 24})
+	var open protogen.PtyOpenResponse
+	_ = json.Unmarshal(openResp.Payload, &open)
+
+	r1 := h.roundTrip(t, conn, "request", "pty.close", map[string]any{"pty_id": open.PtyID})
+	if r1.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("first close: %q (err=%+v)", r1.Kind, r1.Error)
+	}
+	// Second close: idempotent — same success even though the PTY is gone.
+	r2 := h.roundTrip(t, conn, "request", "pty.close", map[string]any{"pty_id": open.PtyID})
+	if r2.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("second close: %q (err=%+v)", r2.Kind, r2.Error)
+	}
+	// Unknown id is also idempotent success.
+	r3 := h.roundTrip(t, conn, "request", "pty.close", map[string]any{"pty_id": uuid.NewString()})
+	if r3.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("unknown close: %q (err=%+v)", r3.Kind, r3.Error)
+	}
+}
+
+func TestPty_InputUnknownPtyId(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"pty:rw"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// pty.input is fire-and-forget on success; on error we still get an
+	// error envelope correlated by request id.
+	resp := h.roundTrip(t, conn, "request", "pty.input", map[string]any{
+		"pty_id": uuid.NewString(),
+		"data":   base64.StdEncoding.EncodeToString([]byte("x")),
+	})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodePtyNotFound {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodePtyNotFound)
+	}
+}
+
+func TestPty_InsufficientScope(t *testing.T) {
+	h := newHarness(t)
+	// fs:r only; no pty:rw.
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "pty.open", map[string]any{"cols": 80, "rows": 24})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeForbidden {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeForbidden)
+	}
+}
+
+func TestPty_OnDisconnectCleansUp(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"pty:rw"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	openResp := h.roundTrip(t, conn, "request", "pty.open", map[string]any{"cols": 80, "rows": 24})
+	if openResp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("open: %+v", openResp.Error)
+	}
+
+	// Drop the WS — runConn's deferred cleanup calls OnDisconnect, which
+	// SIGTERMs every session owned by this conn.
+	conn.Close()
+
+	// Allow OnDisconnect + the SIGTERM/grace/SIGKILL chain to finish.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		// Internal field access via the harness handle. Tests in this
+		// package are inside the same module; the helper is intentionally
+		// minimal so the public surface stays narrow.
+		if remaining := h.pty.OpenSessionCount(); remaining == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("OnDisconnect did not clean up; %d sessions still open", h.pty.OpenSessionCount())
 }
 
 // sanity: make sure protogen envelope enum string we encode actually matches.

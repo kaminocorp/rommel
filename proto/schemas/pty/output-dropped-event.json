@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/output-dropped-event.json",
+  "title": "PtyOutputDroppedEvent",
+  "description": "pty.output_dropped — server-pushed event emitted when the per-connection write channel saturates and the daemon drops oldest pty.output frames. dropped_count is the cumulative number of frames dropped since the last successful flush, so the FE can flash \"output truncated (N frames)\" and the user knows the rendered buffer is incomplete.",
+  "type": "object",
+  "required": ["pty_id", "dropped_count"],
+  "properties": {
+    "pty_id": { "type": "string" },
+    "dropped_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of pty.output frames dropped before this notification."
+    }
+  },
+  "additionalProperties": false
+}

@@ -36,7 +36,8 @@ func main() {
 		log.Fatalf("daemon: %v", err)
 	}
 
-	srv := wsx.NewServer(cfg, buildRoutes(cfg))
+	ptyh := ptyx.New(cfg.WorkspaceRoot)
+	srv := wsx.NewServer(cfg, buildRoutes(cfg, ptyh)).WithLifecycle(ptyh)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.HandleHealth)
@@ -74,10 +75,9 @@ func main() {
 // the session-token.json enum: fs:r grants read-only fs.*; fs:rw grants both;
 // pty:rw is the only pty scope (read/write is inherent to a PTY); funnel:r /
 // funnel:rw scope the planning-funnel verbs.
-func buildRoutes(cfg *config.Config) map[string]wsx.Route {
+func buildRoutes(cfg *config.Config, ptyh *ptyx.Handler) map[string]wsx.Route {
 	fsh := &fsx.Handler{Root: cfg.WorkspaceRoot}
 	funh := &funnelx.Handler{Root: filepath.Join(cfg.WorkspaceRoot, "rommel")}
-	ptyh := &ptyx.Handler{}
 	info := &wsinfo.InfoHandler{WID: cfg.WID}
 
 	fsR := []protogen.SessionTokenClaimsScopeElem{
@@ -105,7 +105,7 @@ func buildRoutes(cfg *config.Config) map[string]wsx.Route {
 
 		// workspace.* — metadata about the workspace. Read-equivalent; no
 		// scope required for v1 (token already says you're authorised here).
-		"workspace.info": {Fn: func(_ context.Context, _ *protogen.SessionTokenClaims, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+		"workspace.info": {Fn: func(_ wsx.HandlerCtx, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 			b, err := info.Info()
 			if err != nil {
 				return nil, &protogen.EnvelopeError{Code: wsx.ErrCodeInternal, Message: err.Error()}
@@ -124,14 +124,15 @@ func buildRoutes(cfg *config.Config) map[string]wsx.Route {
 		"funnel.read":    {RequiredScope: funnelR, Fn: funh.Read},
 		"funnel.promote": {RequiredScope: funnelRw, Fn: funh.Promote},
 
-		// pty.* — all stubbed in scaffolding.
-		"pty.open":   {RequiredScope: ptyRw, Fn: ptyh.NotImplemented("pty.open")},
-		"pty.input":  {RequiredScope: ptyRw, Fn: ptyh.NotImplemented("pty.input")},
-		"pty.resize": {RequiredScope: ptyRw, Fn: ptyh.NotImplemented("pty.resize")},
+		// pty.* — real as of Phase 7.
+		"pty.open":   {RequiredScope: ptyRw, Fn: ptyh.Open},
+		"pty.input":  {RequiredScope: ptyRw, Fn: ptyh.Input},
+		"pty.resize": {RequiredScope: ptyRw, Fn: ptyh.Resize},
+		"pty.close":  {RequiredScope: ptyRw, Fn: ptyh.Close},
 	}
 }
 
-func pingHandler(_ context.Context, _ *protogen.SessionTokenClaims, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+func pingHandler(_ wsx.HandlerCtx, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 	body, _ := json.Marshal(map[string]any{
 		"ok": true,
 		"ts": time.Now().UTC().Format(time.RFC3339Nano),

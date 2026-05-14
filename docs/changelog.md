@@ -4,13 +4,121 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ## Index
 
-- [**0.1.6** — 2026-05-13](#016--2026-05-13) — `rommel/` planning funnel folders dogfooded; first real daemon primitives wired wire-to-wire: `fs.list` / `fs.write` / `funnel.list` / `funnel.read` / `funnel.promote`. Real FileTree, Cmd+S-saving EditorPane, six-column FunnelBoard. Scaffolding era closes — every future primitive is one additive PR.
+- [**0.1.7** — 2026-05-14](#017--2026-05-14) — First streaming primitives: `pty.*` lit wire-to-wire (`pty.open`/`input`/`resize`/`close` + server-pushed `pty.output`/`pty.exit`/`pty.output_dropped`). New per-connection write pump + `Publisher` / `HandlerCtx` / `ConnLifecycle` seams. Terminal pane no longer inert. Streaming-substrate era closes.
+- [**0.1.6** — 2026-05-13](#016--2026-05-13) — `rommel/` planning funnel dogfooded; first real daemon primitives wired wire-to-wire: `fs.list` / `fs.write` / `funnel.list` / `funnel.read` / `funnel.promote`. Real FileTree, Cmd+S-saving EditorPane, six-column FunnelBoard. Scaffolding era closes.
 - [**0.1.5** — 2026-05-13](#015--2026-05-13) — `frontend/`: Next.js 15 + React 19 IDE shell — Supabase SSR auth, TanStack Query, Zustand store, `lib/daemon.ts` WS wrapper, dynamic-imported Monaco + xterm panes, Vitest + Playwright suites. Pattern-B browser-side originator committed; live Playwright + Vercel deploy are the named carryover.
 - [**0.1.4** — 2026-05-13](#014--2026-05-13) — `backend/`: FastAPI control plane — Supabase auth seam, EdDSA session-token broker, workspace CRUD, Fly orchestrator stub. Integration gate green: backend signs → daemon verifies → ping round-trips.
 - [**0.1.3** — 2026-05-13](#013--2026-05-13) — `workspace-image/`: Fly Machine VM image — baked daemon binary, EdDSA pubkey, `git`/`curl`/`tini`; canonical Dockerfile.
 - [**0.1.2** — 2026-05-12](#012--2026-05-12) — `sandbox-daemon/`: Go WS server with EdDSA token validation, `system.ping`, and real `fs.read`.
 - [**0.1.1** — 2026-05-04](#011--2026-05-04) — `proto/` source-of-truth + codegen for TS/Go/Pydantic; session token contract committed.
 - [**0.1.0** — 2026-05-04](#010--2026-05-04) — Repo root scaffolding: monorepo plumbing, defensive CI, no subtree code yet.
+
+---
+
+## 0.1.7 — 2026-05-14
+
+**Phase 7 — `pty.*` primitives + streaming substrate.** Completion doc: [`docs/completions/phase-7-pty.md`](./completions/phase-7-pty.md). Plan (archived on completion): [`docs/archive/phase-7-pty-plan.md`](./archive/phase-7-pty-plan.md). Specialization of [`scaffolding-plan.md`](./executing/scaffolding-plan.md) §2, promoted to the top of the 0.1.6 "Next" list.
+
+Status: ✅ Code authored to plan end-to-end. The first **streaming primitive batch** is wired wire-to-wire: `pty.open` / `pty.input` / `pty.resize` / `pty.close` as request/response RPCs, `pty.output` / `pty.exit` / `pty.output_dropped` as server-pushed events. The load-bearing structural change is `internal/ws/pump.go` — a per-connection write goroutine that owns the gorilla/websocket write side, with `Send` (blocking, response-grade) + `Publish` (best-effort, drop-oldest at 256-frame depth) APIs that any future streaming primitive (`fs.watch`, `git.log --follow`) reuses. The terminal pane is no longer inert: `term.onData` → `pty.input`, `pty.output` → `term.write`, `ResizeObserver` → `pty.resize` (150 ms debounced), `pty.exit` → greyed-out footer. **All 53 daemon tests + 36 frontend unit tests pass green** (47 + 27 from Phase 6 plus 6 new WS-level PTY cases, 7 new PTY handler-level cases, 9 new frontend `pty-rpc` cases). Carryover, same shape as Phase 6: live Playwright extension (`pty.spec.ts`) for the new terminal flow + first Vercel deploy of the upgraded shell.
+
+### Added
+
+- **`proto/schemas/pty/`** — three new schemas:
+  - `close.json` (`PtyCloseRequest{pty_id}` + empty `PtyCloseResponse`; idempotent on the daemon — closing an unknown / already-closed pty_id returns success).
+  - `exit-event.json` (`PtyExitEvent{pty_id, exit_code, signal?}`; `exit_code: -1` when signal-terminated; daemon flushes pending pty.output before emit).
+  - `output-dropped-event.json` (`PtyOutputDroppedEvent{pty_id, dropped_count}` — emitted on the next successful publish after one or more drops).
+- **`sandbox-daemon/internal/ws/pump.go`** — ★ new file. `writePump` owns the per-connection write side. `Send(f)` is blocking submit (responses / errors that must reach the client). `Publish(f)` is best-effort; if the 256-frame buffer is full, drops the oldest enqueued frame and retries once. `dropFn` callback lets the conn-level cleanup count drops for an operator-visible log line. `connPublisher` adapts the pump to the new `ws.Publisher` interface.
+- **`sandbox-daemon/internal/pty/handler.go`** — ★ real implementation (~330 LOC). Daemon-global session map keyed by `pty_id` (UUIDv4), each tagged with the owning `connID`. `Open` spawns `$SHELL || /bin/bash || /bin/sh` under `Setsid: true` so the whole process group can be SIGTERMed at once. `outputLoop` reads 4 KiB chunks → base64-encodes → publishes `pty.output`; on Publish-drop bumps `droppedSinceFlush` and emits `pty.output_dropped` on the next successful publish. `waitLoop` blocks on `cmd.Wait()`, classifies the exit (`-1` + signal name for signaled, else exit code), unregisters, publishes `pty.exit`. `teardown()` SIGTERMs the process group then SIGKILLs after a 200 ms grace; idempotent via `atomic.Bool.CompareAndSwap`. `OnDisconnect(connID)` walks the map and tears down every session for that connection.
+- **`sandbox-daemon/internal/pty/handler_test.go`** — ★ new file, 7 cases: `TestHandler_SoftCap`, `TestHandler_OpenInvalidSize`, `TestHandler_BadCwd`, `TestHandler_InputAndExit`, `TestHandler_OutputContainsEcho`, `TestHandler_CloseIsIdempotent`, `TestHandler_OnDisconnectSparesOtherConns`. Uses a `fakePublisher` test double that captures emitted events and lets tests assert payload contents + ordering.
+- **`frontend/src/lib/pty.ts`** — ★ typed wrappers (~80 LOC): `ptyOpen` (returns `PtyOpenResponse`), `ptyInput` (fire-and-forget via the new `conn.notify()` path; auto-base64-encodes Uint8Array or string), `ptyResize`, `ptyClose`. Plus `bytesToBase64` / `base64ToBytes` browser-native helpers that chunk through `String.fromCharCode(...slice)` to avoid the "Maximum call stack size exceeded" trap on large buffers.
+- **`frontend/src/hooks/usePty.ts`** — ★ React adapter. Opens on mount once the daemon is `ready`, captures the `pty_id`, subscribes to `pty.output` / `pty.exit` / `pty.output_dropped` filtered by `pty_id`, exposes `send(data)` / `resize(cols, rows)` plus `status` / `exitCode` / `signal` / `droppedCount` / `error` React state. Best-effort `ptyClose` on unmount; daemon's `OnDisconnect` is the safety net.
+- **`frontend/tests/unit/pty-rpc.test.ts`** — ★ 9 cases: base64 round-trip (small + 100K), `ptyOpen` / `ptyInput` / `ptyResize` / `ptyClose` wrappers, `pty.output` / `pty.exit` / `pty.output_dropped` event delivery through the upgraded `FakeWebSocket.serverPush()` helper, plus a `notify` fire-and-forget case.
+- **`docs/completions/phase-7-pty.md`** — this phase's completion doc.
+
+### Modified
+
+- **`proto/schemas/pty/resize.json`** — was a `_todo` stub; now defines `PtyResizeRequest{pty_id, cols, rows}` (same 1–1000 bounds as `pty.open`) and an empty `PtyResizeResponse`. Daemon calls `pty.Setsize()` which wraps `TIOCSWINSZ`.
+- **`sandbox-daemon/go.mod` / `go.sum`** — added `github.com/creack/pty v1.1.24`. The dependency was deferred from Phase 2; lands here because Phase 7 is the first phase that needs it.
+- **`sandbox-daemon/internal/ws/envelope.go`** — five new stable error codes (`pty.not_found`, `pty.spawn_failed`, `pty.write_failed`, `pty.invalid_size`, `pty.limit_reached`); internal `eventKind` constant aliasing `protogen.EnvelopeKindEvent` so the pump and publishers stay in agreement.
+- **`sandbox-daemon/internal/ws/server.go`** — the load-bearing migration. New `Publisher` interface (`Publish(eventType, payload) bool`), new `HandlerCtx{Ctx, Claims, Publisher, ConnID}` struct, new `HandlerFunc` signature `(HandlerCtx, json.RawMessage) → (json.RawMessage, *EnvelopeError)`, new `ConnLifecycle{OnDisconnect(connID)}` interface registered via `Server.WithLifecycle()`. `runConn` mints a UUIDv4 `connID`, starts a write pump, builds a `connPublisher` against it, threads both into the `HandlerCtx` it constructs for every dispatch. All outbound frames (responses, errors, events) funnel through `pump.Send` / `pump.Publish`.
+- **`sandbox-daemon/internal/fs/handler.go`**, **`sandbox-daemon/internal/funnel/handler.go`** — mechanical migration of every handler method to the new `(ws.HandlerCtx, json.RawMessage)` signature. No behavioural change; `context` import dropped (`Ctx` lives on `HandlerCtx` now; none of these handlers consult it yet).
+- **`sandbox-daemon/cmd/daemon/main.go`** — wired the four real PTY routes into the dispatch map (replaces the Phase-2 `NotImplemented` stubs), constructs `ptyh := ptyx.New(cfg.WorkspaceRoot)` once at startup, registers it as the connection lifecycle via `wsx.NewServer(...).WithLifecycle(ptyh)`. The inline `workspace.info` closure and `pingHandler` are updated to the new signature.
+- **`sandbox-daemon/internal/ws/server_test.go`** — harness now constructs the PTY handler, registers `WithLifecycle(ptyh)`, broadens default token scopes to include `pty:rw`, exposes `h.pty` on the struct so the disconnect-cleanup test can poll `OpenSessionCount()`. `roundTrip()` now skips event-kind frames between request → response (events are unsolicited, no `id` to correlate). New `drainUntil(timeout, predicate)` and `sendFrame()` helpers. 8 new PTY cases: `TestPty_OpenAndExit`, `TestPty_InputProducesOutput`, `TestPty_ResizeRoundTrip`, `TestPty_ResizeInvalidSize`, `TestPty_CloseIsIdempotent`, `TestPty_InputUnknownPtyId`, `TestPty_InsufficientScope`, `TestPty_OnDisconnectCleansUp`.
+- **`frontend/src/lib/daemon.ts`** — added `notify<TReq>(type, payload): void`. Sends a request frame with a UUID id, registers an inflight slot whose `resolve` is a no-op and whose `reject` console-warns on the error envelope, then auto-deletes the slot after `NOTIFY_INFLIGHT_TTL_MS = 5_000`. Used by `pty.input` so every keystroke doesn't mint an unawaited Promise.
+- **`frontend/src/components/terminal/xterm-impl.tsx`** — replaced the inert welcome banner with a real PTY-wired pane. Mounts xterm + fit + web-links, measures initial cols/rows, then calls `usePty({ cols, rows, env: { TERM: "xterm-256color", COLORTERM: "truecolor" } })`. Wires `term.onData → pty.send` and `pty.onOutput → term.write`; `ResizeObserver → fit.fit() → pty.resize` (150 ms trailing debounce). On `pty.exit` writes a dimmed `[process exited (code N)]` footer and flips `disableStdin = true`. Status strip carries `data-testid="terminal-status"` + `data-state={pty.status}` for the Playwright integration gate.
+
+### Removed / Moved
+
+- **`docs/executing/phase-7-pty-plan.md`** → **`docs/archive/phase-7-pty-plan.md`** — same archival move Phases 3 / 4 / 5 / 6 made on completion. The `executing/` folder is reserved for in-flight plans.
+- **`rommel/executing/phase-7-pty-plan.md`** → **`rommel/archive/phase-7-pty-plan.md`** — the dogfooded copy follows the same rule.
+- New: **`rommel/completions/phase-7-pty-completion.md`** — a short pointer card sitting in `completions/` until the phase ships, at which point a real `funnel.promote` moves it to `archive/`. Meta-dogfooding the Phase-6 primitive.
+
+### Decisions
+
+- **`HandlerCtx` over a bare context pair ✅** — `(ctx, claims, payload)` → `(HandlerCtx{Ctx, Claims, Publisher, ConnID}, payload)`. One breaking change to every handler, mechanical to migrate. The `Publisher` field is what made streaming primitives possible without sprinkling socket refs through handler code.
+- **`ConnLifecycle` interface registered via `WithLifecycle` ⚠ refined** — alternative was a Done channel on `HandlerCtx`. Interface-registration wins: per-handler concerns (PTY tracks per-conn sessions; future `fs.watch` will track per-conn watchers) stay on the handler. `runConn`'s deferred cleanup calls `OnDisconnect(connID)` synchronously.
+- **Per-connection write pump with drop-oldest at 256 frames ✅** — `Send` blocks (responses must reach the client); `Publish` drops oldest then retries (events are best-effort). At ~4 KiB/event the buffer is ~1 MiB of in-flight tolerance — survives FE GC pauses, can't OOM the daemon on a runaway PTY.
+- **Bash via `pickShell()` with `$SHELL → /bin/bash → /bin/sh` fallback, no `--login` ✅** — avoids `/etc/profile` latency on first keystroke. `~/.bashrc` still runs for interactive shells.
+- **`pty.input` is fire-and-forget on the wire AND in the FE API ✅** — daemon returns `(nil, nil)` on success; `conn.notify()` on the FE sends with an id (so errors can match), registers a transient inflight slot, TTLs the slot after 5 s. Every keystroke is one tiny frame; no awaited Promise.
+- **5 ms output flush timer dropped ⚠ refined** — plan §0.4 sketched a 4 KiB + 5 ms coalescing pair. Implementation does only the 4 KiB buffer. Kernel already coalesces small writes; the timer was premature optimisation.
+- **Per-PTY drop counter in the handler, not the pump ⚠ refined** — pump's `dropFn` only counts drops for an operator log line. The PTY handler maintains its own `droppedSinceFlush` for the per-session `pty.output_dropped` events.
+- **`outputLoop` and `waitLoop` are separate goroutines ⚠ refined** — splits the EOF-vs-exit concerns. Output loop publishes until the master fd closes; wait loop publishes `pty.exit` from `cmd.Wait()`. Sidesteps the "shell forks a child that holds the slave open" race.
+- **Soft cap of 4 PTYs per connection ✅** — defense against runaway agents. v1 UI shows 1; soft cap leaves headroom for the eventual multi-PTY tabs without changing the wire contract.
+- **`xterm-impl.tsx` reads `pty` through a `useRef` ⚠ refined** — plan §3.3 wrote `useEffect(..., [pty.status, pty.send])`. The `usePty` return object identity churns per render, which would re-subscribe `term.onData` unnecessarily. The ref pattern decouples effect lifetime from `pty` identity.
+
+### Cross-cutting: the streaming substrate is now in place
+
+Phase 6 closed out the request/response substrate. Phase 7 adds streaming alongside it:
+
+- **One additive seam per streaming primitive.** Adding `fs.watch` or `git.log --follow` from here is the same five steps as a request/response primitive — schema, codegen, Go handler, dispatch entry, TS wrapper + hook — *plus* publishing via `hc.Publisher.Publish(eventType, payload)` from inside the handler. The write pump, `Publisher` interface, disconnect cleanup hook, drop-oldest backpressure, and FE-side `subscribe()` correlation are all in place.
+- **The handler-side ergonomics stay the same.** `HandlerCtx` looks bigger than `(ctx, claims)` but every handler still ignores the fields it doesn't need. `fs.read` doesn't care about `Publisher` or `ConnID`; `pty.open` ignores `Ctx` (the PTY's lifetime is longer than the request's).
+- **The test patterns scale.** `server_test.go`'s `roundTrip` already speaks the wire; the new `drainUntil(predicate)` helper extends it to event streams without rewriting the harness. The frontend's `FakeWebSocket.serverPush(type, payload)` does the same on the FE side. Every future streaming primitive lands ~5 cases against the same harness.
+
+### Verification
+
+```sh
+# Codegen: 4 new pty schemas + finalised resize regenerate clean, no drift.
+make proto
+git diff --exit-code proto/clients proto/schemas/pty
+
+# Daemon unit suite — 53 cases (47 from Phase 6 + 6 new WS-level PTY + 7 new handler-level PTY).
+make -C sandbox-daemon test
+# expected: internal/config, internal/pty, internal/ws all PASS
+
+# Frontend unit suite — 36 cases (27 from Phase 6 + 9 new pty-rpc).
+pnpm --filter ./frontend test:unit
+# expected: 6 files, 36 tests — auth(2), connection-store(8), daemon(8),
+#           fs-rpc(4), funnel-rpc(5), pty-rpc(9) — all green
+
+pnpm --filter ./frontend lint
+# expected: clean exit
+
+# Three-terminal end-to-end:
+#   T1: ROMMEL_WORKSPACE_ROOT=$(pwd) make -C sandbox-daemon run-local
+#   T2: docker compose -f backend/compose.yaml up -d postgres && make -C backend migrate run
+#   T3: pnpm --filter ./frontend dev
+# Browser:
+#   - Sign in → open the dev workspace
+#   - Terminal pane: "mounting…" → "opening…" → "ready"
+#   - Type `ls\n` → output renders inline
+#   - Drag terminal divider → contents reflow; one debounced pty.resize per gesture
+#   - Type `exit 0\n` → pane greys out with "[process exited (code 0)]"
+#   - Refresh page → fresh prompt; daemon logs no zombie PTYs
+```
+
+Captured this session: daemon `go test ./...` all green at 53 tests / ~4.4 s wall (incl. real bash spawns inside `t.TempDir()` workspaces), frontend `pnpm test:unit` green at 6 files / 36 tests / ~770 ms, `pnpm lint` clean exit. `pnpm typecheck` reports 17 errors — all in pre-Phase-7 files (the Phase 5 named carryover: `@supabase/ssr` cookie typing, `RequestInit` body typing); zero in any Phase-7-touched file.
+
+### Next
+
+The streaming substrate is now done. The 0.1.6 "Next" candidates remain in the same order, with PTY pulled off the top:
+
+1. **`fs.watch`** — first natural follow-up; the obvious next streaming primitive. Closes the editor / on-disk drift gap Phase 6 §9.3 flagged. Lands as one additive PR against the now-proven five-seam pattern plus `Publisher`.
+2. **`git.*` structured primitives** — `git.status`, `git.diff`, `git.commit`, `git.branch.*`. Shell out internally; return parsed structured data over the existing request/response path.
+3. **`fs.mkdir` / `fs.move` / `fs.delete`** — closes the v1 file-tree story.
+4. **Multi-PTY tabs (UI-only)** — schema and daemon soft-cap already support 4; FE shows 1. Pure UI work.
+5. **`pty.start_agent(claude|codex)`** — Vision Layer 3's hook. Small additive primitive: open a PTY, immediately exec the agent CLI.
+
+Carryover follow-ups (network-bound): live Playwright `tests/e2e/pty.spec.ts` extending Phase 5's `ping.spec.ts`, first Vercel deploy of the upgraded shell, the deferred Phase-5.5 Flycast `wss://` proxy for production reachability.
 
 ---
 
