@@ -35,6 +35,11 @@ const (
 	ErrCodeFsNotFound     = "fs.not_found"
 	ErrCodeFsInvalidPath  = "fs.invalid_path"
 	ErrCodeFsIO           = "fs.io"
+	ErrCodeFsExists       = "fs.exists"
+	ErrCodeFsNotEmpty     = "fs.not_empty"
+	ErrCodeFsPermission   = "fs.permission"
+	ErrCodeFsWatchFailed      = "fs.watch_failed"
+	ErrCodeFsWatchLimitReached = "fs.watch_limit_reached"
 
 	ErrCodeFunnelInvalidStage      = "funnel.invalid_stage"
 	ErrCodeFunnelInvalidName       = "funnel.invalid_name"
@@ -47,6 +52,7 @@ const (
 	ErrCodePtyWriteFailed  = "pty.write_failed"
 	ErrCodePtyInvalidSize  = "pty.invalid_size"
 	ErrCodePtyLimitReached = "pty.limit_reached"
+	ErrCodePtyUnknownAgent = "pty.unknown_agent"
 )
 
 // eventKind is the envelope.kind for server-pushed events. Promoted out of a

@@ -27,28 +27,34 @@ export function createBrowserClient() {
 // `cookieStore` is the result of `next/headers`' `cookies()` — passed in
 // rather than imported here so this module is import-safe from anywhere.
 
+// Accepts both the hand-written test shape and the real object returned by
+// `next/headers` `cookies()` (ReadonlyRequestCookies in Next 15). We only
+// consume .get(name) and optional .set; the extra methods on the real object
+// are ignored (duck typing).
 type ReadonlyCookieStore = {
   get(name: string): { value: string } | undefined;
   set?(name: string, value: string, options?: CookieOptions): void;
+  [key: string]: unknown;
 };
 
 export function createServerClient(cookieStore: ReadonlyCookieStore) {
+  // The cookie adapter bridges Next's cookie store shape to the one
+  // @supabase/ssr expects. The cast is the minimal surface to keep tsc
+  // happy across @supabase/ssr ^0.5 + Next 15 + React 19 (pre-existing
+  // Phase-5 typing friction; resolved for clean typecheck in Phase 0).
   return createSupabaseServerClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
     cookies: {
-      get(name) {
+      get(name: string) {
         return cookieStore.get(name)?.value;
       },
-      set(name, value, options) {
-        // In RSC the `set` no-ops (cookies are read-only there); the route
-        // handler / server action path injects a writable cookie store and
-        // the writes actually land.
+      set(name: string, value: string, options: CookieOptions) {
         cookieStore.set?.(name, value, options);
       },
-      remove(name, options) {
+      remove(name: string, options: CookieOptions) {
         cookieStore.set?.(name, "", { ...options, maxAge: 0 });
       },
     },
-  });
+  } as any);
 }
 
 // --- Middleware ------------------------------------------------------------
@@ -56,17 +62,17 @@ export function createServerClient(cookieStore: ReadonlyCookieStore) {
 export function createMiddlewareSupabaseClient(req: NextRequest, res: NextResponse) {
   return createSupabaseServerClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
     cookies: {
-      get(name) {
+      get(name: string) {
         return req.cookies.get(name)?.value;
       },
-      set(name, value, options) {
+      set(name: string, value: string, options: CookieOptions) {
         res.cookies.set({ name, value, ...options });
       },
-      remove(name, options) {
+      remove(name: string, options: CookieOptions) {
         res.cookies.set({ name, value: "", ...options, maxAge: 0 });
       },
     },
-  });
+  } as any);
 }
 
 // Backend wants Authorization: Bearer <jwt>. The supabase-ssr session carries

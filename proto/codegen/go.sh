@@ -16,8 +16,11 @@ GOJSONSCHEMA="github.com/atombender/go-jsonschema@v0.18.0"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-# Collect all schema files, sorted for determinism.
-mapfile -d '' schemas < <(find "$SCHEMAS_DIR" -name "*.json" -type f -print0 | LC_ALL=C sort -z)
+# Collect all schema files, sorted for determinism (portable across Bash 3.2+/4+ and macOS).
+schemas=()
+while IFS= read -r -d '' f; do
+  schemas+=("$f")
+done < <(find "$SCHEMAS_DIR" -name "*.json" -type f -print0 | LC_ALL=C sort -z)
 
 if [ "${#schemas[@]}" -eq 0 ]; then
   echo "go: no schemas found under $SCHEMAS_DIR" >&2

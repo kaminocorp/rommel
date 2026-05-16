@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/pty/start-agent.json",
+  "title": "PtyStartAgent",
+  "description": "pty.start_agent — allocate a new PTY and immediately exec an agent CLI (claude, codex, cursor, ...) instead of an interactive shell. The returned pty_id behaves exactly like one from pty.open: all pty.input / pty.resize / pty.close / pty.output / pty.exit primitives work unchanged. This is the minimal hook for Vision Layer 3 agent dispatch inside the ADE.",
+  "$defs": {
+    "PtyStartAgentRequest": {
+      "title": "PtyStartAgentRequest",
+      "type": "object",
+      "required": ["agent"],
+      "properties": {
+        "agent": {
+          "type": "string",
+          "enum": ["claude", "codex", "cursor"],
+          "description": "The agent CLI to launch inside the PTY."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "CLI arguments passed to the agent (e.g. [\"--dangerously-skip-permissions\"])."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Workspace-relative starting directory. Defaults to workspace root."
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra environment variables merged onto the workspace baseline (same semantics as pty.open).",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PtyStartAgentResponse": {
+      "title": "PtyStartAgentResponse",
+      "type": "object",
+      "required": ["pty_id"],
+      "properties": {
+        "pty_id": {
+          "type": "string",
+          "description": "Opaque handle (UUIDv4) for the new PTY session running the agent. Use with all other pty.* calls."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/PtyStartAgentRequest" },
+    { "$ref": "#/$defs/PtyStartAgentResponse" }
+  ]
+}

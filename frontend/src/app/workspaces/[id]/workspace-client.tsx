@@ -4,9 +4,10 @@ import { useState } from "react";
 import { Header } from "@/components/shell/Header";
 import { StatusBar } from "@/components/shell/StatusBar";
 import { ConnectionPill } from "@/components/shell/ConnectionPill";
+import { GitStatusPill } from "@/components/shell/GitStatusPill";
 import { FileTree } from "@/components/filetree/FileTree";
 import { EditorPane } from "@/components/editor/EditorPane";
-import { TerminalPane } from "@/components/terminal/TerminalPane";
+import { TerminalTabs } from "@/components/terminal/TerminalTabs";
 import { FunnelBoard } from "@/components/funnel/FunnelBoard";
 import { useDaemonConnection } from "@/hooks/useDaemonConnection";
 import { cn } from "@/lib/utils";
@@ -38,7 +39,7 @@ export function WorkspaceClient({ workspace }: { workspace: Workspace }) {
                 <EditorPane />
               </section>
               <section className="xterm-host min-h-0 overflow-hidden border-t border-zinc-800">
-                <TerminalPane />
+                <TerminalTabs />
               </section>
             </div>
           ) : (
@@ -49,6 +50,7 @@ export function WorkspaceClient({ workspace }: { workspace: Workspace }) {
         </main>
       </div>
       <StatusBar>
+        <GitStatusPill />
         <ConnectionPill />
       </StatusBar>
     </div>

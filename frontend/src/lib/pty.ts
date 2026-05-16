@@ -20,6 +20,8 @@ import type {
   PtyOpenResponse,
   PtyResizeRequest,
   PtyResizeResponse,
+  PtyStartAgentRequest,
+  PtyStartAgentResponse,
 } from "@rommel/proto";
 import type { DaemonConnection } from "@/lib/daemon";
 
@@ -62,6 +64,13 @@ export async function ptyClose(
   return conn.rpc<PtyCloseRequest, PtyCloseResponse>("pty.close", {
     pty_id: ptyId,
   });
+}
+
+export async function ptyStartAgent(
+  conn: DaemonConnection,
+  req: PtyStartAgentRequest,
+): Promise<PtyStartAgentResponse> {
+  return conn.rpc<PtyStartAgentRequest, PtyStartAgentResponse>("pty.start_agent", req);
 }
 
 // --- base64 helpers ---------------------------------------------------------

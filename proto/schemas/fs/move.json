@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/move.json",
+  "title": "FsMove",
+  "description": "fs.move — atomically rename/move a file or directory from one path to another within the workspace. 'from' must exist. The parent of 'to' must exist. If 'to' already exists the operation fails (fs.exists). This is the generic primitive behind funnel.promote stage transitions.",
+  "$defs": {
+    "FsMoveRequest": {
+      "title": "FsMoveRequest",
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Workspace-relative source path (file or directory). Must exist."
+        },
+        "to": {
+          "type": "string",
+          "description": "Workspace-relative destination path. Parent directory must already exist. Must not already exist."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsMoveResponse": {
+      "title": "FsMoveResponse",
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "mtime of the destination after the move."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FsMoveRequest" },
+    { "$ref": "#/$defs/FsMoveResponse" }
+  ]
+}

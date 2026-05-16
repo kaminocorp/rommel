@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/mkdir.json",
+  "title": "FsMkdir",
+  "description": "fs.mkdir — create a directory. When recursive=false (default), the parent directory must already exist. When recursive=true, any missing parent directories are created (like mkdir -p).",
+  "$defs": {
+    "FsMkdirRequest": {
+      "title": "FsMkdirRequest",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative directory path to create. Daemon rejects absolute paths and escapes of the workspace root."
+        },
+        "recursive": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, create parent directories as needed (mkdir -p semantics)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsMkdirResponse": {
+      "title": "FsMkdirResponse",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The created directory path (echo of request, normalized)."
+        },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation / modification timestamp, RFC 3339."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FsMkdirRequest" },
+    { "$ref": "#/$defs/FsMkdirResponse" }
+  ]
+}

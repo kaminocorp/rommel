@@ -59,6 +59,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     _configure_logging()
+    settings = get_settings()
 
     app = FastAPI(
         title="rommel-backend",
@@ -68,11 +69,13 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # CORS — the browser IDE (Phase 5) is a separate origin. Production locks
-    # this to the frontend domain via an env override; dev allows localhost.
+    # CORS — the browser IDE (Phase 5) is a separate origin. Production sets
+    # ROMMEL_CORS_ORIGINS to the exact frontend origin(s); dev defaults to '*'.
+    # allow_credentials stays false: the daemon is the only thing handling
+    # session-tokens, and the API doesn't use cookies — so wildcard is safe.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -15,6 +15,12 @@ primary_region = "iad"
   ROMMEL_FLY_WORKSPACES_APP = "rommel-workspaces"
   # ROMMEL_DAEMON_URL_TEMPLATE is set via `fly secrets` so the prod / staging
   # templates can differ without code changes.
+  #
+  # Phase 0: after the Flycast public hostname is wired on rommel-workspaces,
+  # set (example):
+  #   ROMMEL_DAEMON_URL_TEMPLATE="wss://{wid}.workspaces.rommel.dev/ws"
+  # (or whatever public shape the Flycast service + custom domain produces).
+  # The backend simply interpolates {wid} and returns it to the browser.
 
 [http_service]
   internal_port = 8080

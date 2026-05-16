@@ -124,7 +124,7 @@ func (h *Handler) Open(hc ws.HandlerCtx, payload json.RawMessage) (json.RawMessa
 	shell := pickShell()
 	cmd := exec.Command(shell)
 	cmd.Dir = cwd
-	cmd.Env = mergeEnv(req.Env)
+	cmd.Env = mergeEnv(map[string]string(req.Env))
 	// Become a session leader so we can SIGTERM the whole process group on
 	// teardown (signals to the leader propagate to descendants).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -153,6 +153,81 @@ func (h *Handler) Open(hc ws.HandlerCtx, payload json.RawMessage) (json.RawMessa
 	resp, err := json.Marshal(protogen.PtyOpenResponse{PtyID: s.id})
 	if err != nil {
 		return nil, errBody(ws.ErrCodeInternal, "pty.open: marshal: "+err.Error())
+	}
+	return resp, nil
+}
+
+// StartAgent implements pty.start_agent (Phase 3).
+// It allocates a PTY exactly like pty.open but execs a known agent CLI
+// (claude / codex / cursor) instead of a shell. All subsequent pty.*
+// operations (input, output events, resize, close, exit) work identically.
+// The agent binary must be present in $PATH inside the workspace image
+// (user can `npm i -g ...` or apt install beforehand via terminal).
+func (h *Handler) StartAgent(hc ws.HandlerCtx, payload json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
+	var req protogen.PtyStartAgentRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, errBody(ws.ErrCodeBadRequest, "pty.start_agent: invalid payload: "+err.Error())
+	}
+
+	agentBinaries := map[string]string{
+		"claude": "claude",
+		"codex":  "codex",
+		"cursor": "cursor",
+	}
+	bin, ok := agentBinaries[req.Agent]
+	if !ok {
+		return nil, errBody(ws.ErrCodePtyUnknownAgent, "pty.start_agent: unknown agent "+req.Agent)
+	}
+
+	if n := h.countByConn(hc.ConnID); n >= MaxPTYsPerConn {
+		return nil, errBody(ws.ErrCodePtyLimitReached,
+			fmt.Sprintf("pty.start_agent: connection already owns %d PTYs (cap %d)", n, MaxPTYsPerConn))
+	}
+
+	cwd := h.WorkspaceRoot
+	if req.Cwd != nil && *req.Cwd != "" {
+		resolved, err := h.resolveCwd(*req.Cwd)
+		if err != nil {
+			return nil, errBody(ws.ErrCodePtySpawnFailed, "pty.start_agent: "+err.Error())
+		}
+		cwd = resolved
+	}
+
+	args := make([]string, len(req.Args))
+	copy(args, req.Args)
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = cwd
+	cmd.Env = mergeEnv(map[string]string(req.Env))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	// Default initial size; FE is expected to send pty.resize shortly after
+	// (same pattern as a fresh terminal tab).
+	const defaultCols, defaultRows = 80, 24
+
+	file, err := pty.StartWithSize(cmd, &pty.Winsize{
+		Rows: uint16(defaultRows),
+		Cols: uint16(defaultCols),
+	})
+	if err != nil {
+		return nil, errBody(ws.ErrCodePtySpawnFailed, "pty.start_agent: "+err.Error())
+	}
+
+	s := &session{
+		id:     uuid.NewString(),
+		connID: hc.ConnID,
+		cmd:    cmd,
+		file:   file,
+		done:   make(chan struct{}),
+	}
+	h.register(s)
+
+	publisher := hc.Publisher
+	go h.outputLoop(s, publisher)
+	go h.waitLoop(s, publisher)
+
+	resp, err := json.Marshal(protogen.PtyStartAgentResponse{PtyID: s.id})
+	if err != nil {
+		return nil, errBody(ws.ErrCodeInternal, "pty.start_agent: marshal: "+err.Error())
 	}
 	return resp, nil
 }
@@ -407,7 +482,7 @@ func pickShell() string {
 // mergeEnv layers the request's env vars on top of the daemon's process
 // env. TERM is not defaulted here — the frontend sets it to xterm-256color
 // at open time (decision §0.10).
-func mergeEnv(extra protogen.PtyOpenRequestEnv) []string {
+func mergeEnv(extra map[string]string) []string {
 	base := os.Environ()
 	if len(extra) == 0 {
 		return base

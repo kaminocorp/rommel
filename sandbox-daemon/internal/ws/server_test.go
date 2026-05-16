@@ -23,6 +23,7 @@ import (
 	"github.com/rommel-ade/rommel/sandbox-daemon/internal/config"
 	fsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/fs"
 	funnelx "github.com/rommel-ade/rommel/sandbox-daemon/internal/funnel"
+	gitx "github.com/rommel-ade/rommel/sandbox-daemon/internal/git"
 	ptyx "github.com/rommel-ade/rommel/sandbox-daemon/internal/pty"
 	wsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/ws"
 )
@@ -35,6 +36,7 @@ type harness struct {
 	cfg  *config.Config
 	root string
 	pty  *ptyx.Handler
+	fsh  *fsx.Handler
 }
 
 func newHarness(t *testing.T) *harness {
@@ -69,6 +71,13 @@ func newHarness(t *testing.T) *harness {
 	}
 	funnelRw := []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemFunnelRw}
 
+	gitR := []protogen.SessionTokenClaimsScopeElem{
+		protogen.SessionTokenClaimsScopeElemGitR,
+		protogen.SessionTokenClaimsScopeElemGitRw,
+	}
+	gitRw := []protogen.SessionTokenClaimsScopeElem{protogen.SessionTokenClaimsScopeElemGitRw}
+	gith := &gitx.Handler{Root: cfg.WorkspaceRoot}
+
 	routes := map[string]wsx.Route{
 		"system.ping": {Fn: func(_ wsx.HandlerCtx, _ json.RawMessage) (json.RawMessage, *protogen.EnvelopeError) {
 			return json.RawMessage(`{"ok":true}`), nil
@@ -76,6 +85,13 @@ func newHarness(t *testing.T) *harness {
 		"fs.read":        {RequiredScope: fsR, Fn: fsh.Read},
 		"fs.list":        {RequiredScope: fsR, Fn: fsh.List},
 		"fs.write":       {RequiredScope: fsRw, Fn: fsh.Write},
+		"fs.watch":       {RequiredScope: fsR, Fn: fsh.Watch},
+		"git.status":        {RequiredScope: gitR, Fn: gith.Status},
+		"git.diff":          {RequiredScope: gitR, Fn: gith.Diff},
+		"git.branch.list":   {RequiredScope: gitR, Fn: gith.BranchList},
+		"git.branch.create": {RequiredScope: gitRw, Fn: gith.BranchCreate},
+		"git.branch.switch": {RequiredScope: gitRw, Fn: gith.BranchSwitch},
+		"git.commit":        {RequiredScope: gitRw, Fn: gith.Commit},
 		"funnel.list":    {RequiredScope: funnelR, Fn: funh.List},
 		"funnel.read":    {RequiredScope: funnelR, Fn: funh.Read},
 		"funnel.promote": {RequiredScope: funnelRw, Fn: funh.Promote},
@@ -85,7 +101,10 @@ func newHarness(t *testing.T) *harness {
 		"pty.close":      {RequiredScope: ptyRw, Fn: ptyh.Close},
 	}
 
-	srv := wsx.NewServer(cfg, routes).WithLifecycle(ptyh)
+	srv := wsx.NewServer(cfg, routes).
+		WithLifecycle(ptyh).
+		WithLifecycle(fsh). // Phase 1 fs.watch
+		WithLifecycle(gith) // Phase 2 git (for future stateful commands)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.HandleHealth)
 	mux.HandleFunc("/ws", srv.HandleWS)
@@ -93,7 +112,7 @@ func newHarness(t *testing.T) *harness {
 
 	t.Cleanup(func() { ts.Close() })
 
-	return &harness{srv: ts, priv: priv, cfg: cfg, root: root, pty: ptyh}
+	return &harness{srv: ts, priv: priv, cfg: cfg, root: root, pty: ptyh, fsh: fsh}
 }
 
 // mintToken signs a valid JWT for this harness. Optional knobs let individual
@@ -1126,6 +1145,179 @@ func TestPty_OnDisconnectCleansUp(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("OnDisconnect did not clean up; %d sessions still open", h.pty.OpenSessionCount())
+}
+
+// --- fs.watch ---------------------------------------------------------------
+
+func TestFsWatch_RoundTrip(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.watch", map[string]any{"path": "."})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("kind: %q (err=%+v)", resp.Kind, resp.Error)
+	}
+	var body protogen.FsWatchResponse
+	if err := json.Unmarshal(resp.Payload, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Path != "." {
+		t.Fatalf("path: got %q want %q", body.Path, ".")
+	}
+}
+
+func TestFsWatch_EmitsCreateEvent(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Subscribe on the workspace root, then mutate the filesystem and observe
+	// the published fs.watch-event.
+	resp := h.roundTrip(t, conn, "request", "fs.watch", map[string]any{"path": "."})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("watch: %+v", resp.Error)
+	}
+
+	// fsnotify delivers Add() asynchronously on some platforms; give it a beat.
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(h.root, "new.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, _ := drainUntil(t, conn, 3*time.Second, func(f *wsx.Frame) bool {
+		if f.Kind != protogen.EnvelopeKindEvent || f.Type != "fs.watch-event" {
+			return false
+		}
+		var ev protogen.FsWatchEvent
+		if json.Unmarshal(f.Payload, &ev) != nil {
+			return false
+		}
+		// We accept any operation kind: the create may surface as 'created' or
+		// 'modified' depending on whether fsnotify coalesced the open+write.
+		return ev.Path == "new.txt"
+	})
+	if got == nil {
+		t.Fatalf("never saw fs.watch-event for new.txt")
+	}
+}
+
+func TestFsWatch_RecursivePicksUpNewDir(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.watch", map[string]any{"path": ".", "recursive": true})
+	if resp.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("watch: %+v", resp.Error)
+	}
+
+	// Drain the create event for the new dir AND for the file we drop inside
+	// it. Recursive watches auto-add new subdirectories — the second event
+	// proves that pump is wired up.
+	time.Sleep(50 * time.Millisecond)
+	if err := os.Mkdir(filepath.Join(h.root, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(h.root, "sub", "inner.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, _ := drainUntil(t, conn, 3*time.Second, func(f *wsx.Frame) bool {
+		if f.Kind != protogen.EnvelopeKindEvent || f.Type != "fs.watch-event" {
+			return false
+		}
+		var ev protogen.FsWatchEvent
+		if json.Unmarshal(f.Payload, &ev) != nil {
+			return false
+		}
+		// The inner file proves recursion picked up `sub/`.
+		return strings.HasSuffix(ev.Path, "inner.txt")
+	})
+	if got == nil {
+		t.Fatalf("never saw fs.watch-event for sub/inner.txt — recursion did not auto-add")
+	}
+}
+
+func TestFsWatch_SoftCap(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Seed 32 directories so each watch resolves a real path. The cap is on
+	// the handler side (maxWatchesPerConn = 32); the 33rd must error.
+	for i := 0; i < 32; i++ {
+		dir := filepath.Join(h.root, fmt.Sprintf("d%02d", i))
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		r := h.roundTrip(t, conn, "request", "fs.watch", map[string]any{"path": fmt.Sprintf("d%02d", i)})
+		if r.Kind != protogen.EnvelopeKindResponse {
+			t.Fatalf("watch d%02d: %+v", i, r.Error)
+		}
+	}
+	dir33 := filepath.Join(h.root, "d33")
+	if err := os.Mkdir(dir33, 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := h.roundTrip(t, conn, "request", "fs.watch", map[string]any{"path": "d33"})
+	if r.Error == nil || r.Error.Code != wsx.ErrCodeFsWatchLimitReached {
+		t.Fatalf("33rd watch: got %+v want fs.watch_limit_reached", r.Error)
+	}
+}
+
+func TestFsWatch_OnDisconnectCleansUp(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	r := h.roundTrip(t, conn, "request", "fs.watch", map[string]any{"path": "."})
+	if r.Kind != protogen.EnvelopeKindResponse {
+		t.Fatalf("watch: %+v", r.Error)
+	}
+	if got := h.fsh.OpenWatchCount(); got != 1 {
+		t.Fatalf("pre-disconnect: %d want 1", got)
+	}
+
+	conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if h.fsh.OpenWatchCount() == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("OnDisconnect did not clear watches; %d still live", h.fsh.OpenWatchCount())
+}
+
+func TestFsWatch_InvalidPath_Rejected(t *testing.T) {
+	h := newHarness(t)
+	conn, _, err := h.dial(t, h.mintToken(t, tokenOpts{scope: []string{"fs:r"}}))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	resp := h.roundTrip(t, conn, "request", "fs.watch", map[string]any{"path": "../../etc"})
+	if resp.Error == nil || resp.Error.Code != wsx.ErrCodeFsInvalidPath {
+		t.Fatalf("code: got %+v want %q", resp.Error, wsx.ErrCodeFsInvalidPath)
+	}
 }
 
 // sanity: make sure protogen envelope enum string we encode actually matches.

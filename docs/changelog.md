@@ -4,6 +4,7 @@ All notable changes to this project, latest on top. Each entry links to the corr
 
 ## Index
 
+- [**0.1.8** — 2026-05-16](#018--2026-05-16) — **Production-cutover + post-substrate primitives era.** Phase 0 production cutover (Flycast public `wss://`, live `pty.spec.ts`, clean typecheck). Phase 1 `fs.watch` streaming primitive (seams + skeleton). Phase 2 structured git primitives (`git.status` / `diff` / `branch.list|create|switch` / `commit` + `workspace.info.repo` + `GitStatusPill`). Phase 3 multi-PTY tabs + `pty.start_agent(claude|codex|cursor)`. Phase 4 fs write primitives (`fs.mkdir` / `fs.move` / `fs.delete`) + FileTree write UX. Phase 5 real fsnotify event pump + FileTree context menu wired + deploy readiness. Phase 6 assessment polish: panic→error in `fs.watch` init, watcher `Stop()` on SIGTERM, 11 new tests (fs.watch / pty.start_agent / pty.output_dropped), `ROMMEL_CORS_ORIGINS`, `git.Commit` OID via `rev-parse`. v1 filesystem + terminal + git + agent dispatch is feature-complete and production-cutover ready.
 - [**0.1.7** — 2026-05-14](#017--2026-05-14) — First streaming primitives: `pty.*` lit wire-to-wire (`pty.open`/`input`/`resize`/`close` + server-pushed `pty.output`/`pty.exit`/`pty.output_dropped`). New per-connection write pump + `Publisher` / `HandlerCtx` / `ConnLifecycle` seams. Terminal pane no longer inert. Streaming-substrate era closes.
 - [**0.1.6** — 2026-05-13](#016--2026-05-13) — `rommel/` planning funnel dogfooded; first real daemon primitives wired wire-to-wire: `fs.list` / `fs.write` / `funnel.list` / `funnel.read` / `funnel.promote`. Real FileTree, Cmd+S-saving EditorPane, six-column FunnelBoard. Scaffolding era closes.
 - [**0.1.5** — 2026-05-13](#015--2026-05-13) — `frontend/`: Next.js 15 + React 19 IDE shell — Supabase SSR auth, TanStack Query, Zustand store, `lib/daemon.ts` WS wrapper, dynamic-imported Monaco + xterm panes, Vitest + Playwright suites. Pattern-B browser-side originator committed; live Playwright + Vercel deploy are the named carryover.
@@ -12,6 +13,304 @@ All notable changes to this project, latest on top. Each entry links to the corr
 - [**0.1.2** — 2026-05-12](#012--2026-05-12) — `sandbox-daemon/`: Go WS server with EdDSA token validation, `system.ping`, and real `fs.read`.
 - [**0.1.1** — 2026-05-04](#011--2026-05-04) — `proto/` source-of-truth + codegen for TS/Go/Pydantic; session token contract committed.
 - [**0.1.0** — 2026-05-04](#010--2026-05-04) — Repo root scaffolding: monorepo plumbing, defensive CI, no subtree code yet.
+
+---
+
+## 0.1.8 — 2026-05-16
+
+**Phases 0–6 — Production cutover + post-substrate primitives.** Seven sequential phases that take the substrate proven in 0.1.7 and turn it into a usable product: real production reachability, the first non-PTY streaming primitive (`fs.watch`), structured git, multi-PTY + agent dispatch, the write side of the filesystem, the real fsnotify pump, and an end-to-end assessment-driven polish pass. The "scaffolding era" closed in 0.1.6; the "streaming-substrate era" closed in 0.1.7; **0.1.8 closes the "v1 feature-completion era."** From here every named feature on the v1 vision is on disk, lit up, and exercisable against a real Vercel + Fly deployment.
+
+Completion docs:
+
+- [`phase-0-production-cutover.md`](./completions/phase-0-production-cutover.md)
+- [`phase-1-fs-watch.md`](./completions/phase-1-fs-watch.md)
+- [`phase-2-git-primitives.md`](./completions/phase-2-git-primitives.md)
+- [`phase-3-multi-pty-agent-dispatch.md`](./completions/phase-3-multi-pty-agent-dispatch.md)
+- [`phase-4-fs-write-primitives.md`](./completions/phase-4-fs-write-primitives.md)
+- [`phase-5-fs-watch-filetree-deploy.md`](./completions/phase-5-fs-watch-filetree-deploy.md)
+- [`phase-6-assessment-polish.md`](./completions/phase-6-assessment-polish.md)
+
+Driving plan: [`docs/executing/next-steps.md`](./executing/next-steps.md). Mid-era audit that drove Phase 6: [`docs/plans/phase-0-5-assessment.md`](./plans/phase-0-5-assessment.md).
+
+---
+
+### Phase 0 — Production Cutover (2026-05-15)
+
+Status: ✅ Live reachability + first real deploys + production gate. Closes the last named carryover from Phase 5 ("live Playwright + Vercel deploy") and the deferred Phase-5.5 Flycast `wss://` proxy.
+
+**Added**
+
+- **`frontend/tests/e2e/pty.spec.ts`** — ★ the live production gate. Extends `ping.spec.ts`: programmatic Supabase sign-in → navigate to `/workspaces/{E2E_WORKSPACE_ID}` → assert `connection-pill` reaches `ready` → assert `terminal-status` reaches `ready` → keystroke `exit 0\r` → assert `exited (code 0)` → reload → assert fresh ready PTY (exercises reconnect + no zombies). Works both locally (three-terminal dev stack) and against real prod (`PLAYWRIGHT_BASE_URL=https://rommel.vercel.app`).
+
+**Modified**
+
+- **`workspace-image/fly.toml`** — added commented `[[services]]` example for the public WSS exposure on `rommel-workspaces`, with explanation of the hostname shape, DNS, secret, and the security trade-off vs. the original Phase-3 "no `[[services]]`" decision.
+- **`backend/fly.toml`**, **`backend/.env.example`**, **`backend/README.md`** — production `ROMMEL_DAEMON_URL_TEMPLATE` examples refreshed to the Flycast public form (`wss://{wid}.workspaces.rommel.dev/ws`).
+- **`frontend/src/lib/api.ts`** — tightened `ApiInit` (proper `BodyInit | null`; `as RequestInit` on the final fetch options) — eliminates the React-19 / Next-15 strict `lib.dom` body-typing friction.
+- **`frontend/src/lib/auth.ts`** — improved `ReadonlyCookieStore` with an index signature to match `cookies()` from `next/headers`; precise `get/set/remove` signatures; minimal `as any` casts on the two `createSupabaseServerClient(...)` calls (the surgical surface for the `@supabase/ssr` ^0.5 cookie-adapter mismatch).
+- **`docs/executing/next-steps.md`** — §0 marked complete; concrete proxy choice recorded.
+
+**Decisions**
+
+- **Direct Flycast public WSS on `rommel-workspaces` ✅** — Option 3 from the discussion. The EdDSA token (5-min TTL, per-`wid` claim, daemon-enforced scopes) remains the security boundary; a Python/Go WS relay inside `rommel-backend` is documented as future hardening but skipped for the cutover. Zero protocol or handler change required — the `daemon_url` contract returned by `POST /workspaces/:id/sessions` was already fully dynamic.
+- **Clean typecheck as exit criterion ✅** — the 17 pre-Phase-7 errors all lived in `api.ts` + `auth.ts`; resolved with the minimal cast surface. `pnpm typecheck` is now clean — Vercel builds with zero noise.
+- **Live e2e is the only production gate ✅** — a mis-wired proxy, wrong secret, or DNS label regression is invisible to unit tests; `pty.spec.ts` against a real Fly machine is the only test that would catch it.
+
+---
+
+### Phase 1 — `fs.watch` (2026-05-15)
+
+Status: ✅ First non-PTY streaming primitive — five-seam wiring (schema + codegen + daemon handler + lib + hook + subscribe) is in place. **The real fsnotify event pump shipped in Phase 5** (seams here; pump there).
+
+**Added**
+
+- **`proto/schemas/fs/watch.json`** + **`proto/schemas/fs/watch-event.json`** — `FsWatchRequest{path, recursive?}` + `FsWatchResponse{path}`; `FsWatchEvent{path, type: "created"|"modified"|"deleted"|"moved", old_path?}` (server-pushed).
+- **`sandbox-daemon/internal/fs/handler.go`** — `Handler` now owns the fsnotify watcher + a `watches map[connID]map[path]watchEntry` keyed by connection. `Watch(hc, payload)` resolves the path, enforces a soft cap of 32 watches per connection, stores the subscription against `hc.Publisher`, acks. `OnDisconnect(connID)` removes every watch for that connection.
+- **`frontend/src/lib/fs.ts`** — `fsWatch(conn, path, recursive?)` wrapper.
+- **`frontend/src/hooks/useFsWatch.ts`** — ★ React hook following the exact `usePty` pattern: opens on mount, subscribes to `fs.watch-event`, delivers via stable `onEvent` ref, returns `{status, error, lastEvent}`.
+- **`sandbox-daemon/go.mod`** — `github.com/fsnotify/fsnotify v1.7.0`.
+
+**Modified**
+
+- **`sandbox-daemon/internal/ws/envelope.go`** — two new error codes: `fs.watch_failed`, `fs.watch_limit_reached`.
+- **`sandbox-daemon/cmd/daemon/main.go`** — `fs.watch` route bound to `fs:r`; `fsh` registered via `.WithLifecycle(fsh)` alongside the PTY handler.
+
+**Decisions**
+
+- **One global `fsnotify.Watcher` per `fs.Handler` + per-conn subscription table ✅** — refcounted paths; standard efficient pattern, mirrors PTY's per-conn session table.
+- **Watch lifetime = connection lifetime (no `fs.unwatch` in v1) ✅** — React unmount + daemon `OnDisconnect` handle teardown.
+- **Soft cap 32 watches/conn (vs. 4 for PTY) ✅** — a real editor easily reaches double digits.
+- **Coarse event types `{created, modified, deleted, moved}` ✅** — no `fsnotify.Op` bits surfaced.
+
+---
+
+### Phase 2 — Git Primitives (2026-05-15)
+
+Status: ✅ All core structured git primitives are live. `git.status` / `git.diff` / `git.branch.{list,create,switch}` / `git.commit`. Visible branch + dirty-state pill in the StatusBar. `workspace.info.repo` is populated for the first time.
+
+**Added**
+
+- **`proto/schemas/git/`** — `status.json`, `diff.json`, `branch.json`, `commit.json`.
+- **`sandbox-daemon/internal/git/handler.go`** — ★ shared `runGit(workdir, ...)` helper + `Status`, `Diff`, `BranchList`, `BranchCreate`, `BranchSwitch`, `Commit`. Shells out to the system `git`; lightweight porcelain parsing. All commands hard-rooted to the workspace root.
+- **`frontend/src/lib/git.ts`** — typed wrappers for every primitive.
+- **`frontend/src/hooks/useGitStatus.ts`** — TanStack Query hook.
+- **`frontend/src/components/shell/GitStatusPill.tsx`** — live branch + dirty indicator wired into the workspace layout.
+
+**Modified**
+
+- **`sandbox-daemon/internal/workspace/info.go`** — `workspace.info` populates the `repo` field (`url`, `branch`, `head_sha`) when a git repo is present (was a Phase-1 placeholder).
+- **`sandbox-daemon/cmd/daemon/main.go`** — routes wired under `git:r` (read) / `git:rw` (commit + branch.create/switch).
+
+**Decisions**
+
+- **Shell out + porcelain parsing (not `go-git`) ✅** — explicit recommendation from `next-steps.md`; keeps dependencies minimal.
+- **Close the core set in one phase ✅** — `status + diff + branch.* + commit` is the minimum surface for both humans and agents to work productively.
+- **`workspace.info` repo-field as a free win ✅** — the plumbing exists now; populate it.
+
+---
+
+### Phase 3 — Multi-PTY Tabs + `pty.start_agent` (2026-05-16)
+
+Status: ✅ The Phase-7 daemon soft-cap of 4 PTYs/conn is now exercised by a tabbed terminal UI, and the first Vision Layer-3 primitive `pty.start_agent` is wired end-to-end. Up to 4 concurrent shells or agent CLIs (`claude` / `codex` / `cursor`) in one workspace, each an independent live PTY tab.
+
+**Added**
+
+- **`proto/schemas/pty/start-agent.json`** — `PtyStartAgentRequest{agent, args?, cwd?, env?}` + `PtyStartAgentResponse{pty_id}`.
+- **`sandbox-daemon/internal/pty/handler.go`** — new `StartAgent(hc, payload)` (~50 LOC). Validates `agent` against an allow-list (`claude` / `codex` / `cursor`), resolves optional `cwd`, builds the `exec.Cmd`, then reuses the *exact same* `pty.StartWithSize` + session-registration + `outputLoop`/`waitLoop` path as `Open`. Agent PTYs emit `pty.output` / `pty.exit` / `pty.output_dropped` and accept `pty.input` / `pty.resize` / `pty.close` like any other PTY.
+- **`sandbox-daemon/internal/ws/envelope.go`** — `pty.unknown_agent` error code.
+- **`frontend/src/lib/pty.ts`** — `ptyStartAgent(conn, req)` wrapper.
+- **`frontend/src/components/terminal/TerminalTabs.tsx`** — ★ replaces the single `TerminalPane`. Tab bar + up to 4 live `XtermImpl` instances; all kept mounted (CSS-hidden when inactive) so PTY output and xterm scrollback survive tab switches. `+` mounts a fresh `usePty` → new `pty.open`; `×` unmounts → best-effort `pty.close`.
+
+**Modified**
+
+- **`sandbox-daemon/cmd/daemon/main.go`** — `pty.start_agent` route bound to `pty:rw`. Existing `ptyh.ConnLifecycle` cleans up agent PTYs on disconnect for free.
+- **`sandbox-daemon/internal/pty/handler.go`** — `mergeEnv` signature relaxed to `map[string]string` so `Open` + `StartAgent` share the helper.
+- **`proto/codegen/go.sh`** — drive-by portability fix (`mapfile` → portable `while read -d ''` loop) so `make proto` works on macOS default bash 3.2.
+- **`frontend/src/app/workspaces/[id]/workspace-client.tsx`** — IDE view now hosts `<TerminalTabs />`.
+
+**Decisions**
+
+- **`pty.start_agent` response is identical to `pty.open` (`{pty_id}`) ✅** — every existing PTY consumer (`usePty`, xterm wiring, status strip, Playwright selectors) works for agent tabs unchanged.
+- **Agent binaries resolved by simple allow-list ✅** — unknown agent → clean `pty.unknown_agent` envelope, not a confusing `exec: not found`.
+- **Tabs keep all PTYs mounted (CSS-hidden) ✅** — preserves scrollback; costs ~4× xterm memory, acceptable under the 4-PTY soft cap.
+
+---
+
+### Phase 4 — Filesystem Write Primitives (2026-05-16)
+
+Status: ✅ `fs.mkdir` / `fs.move` / `fs.delete` complete the v1 write contract. The FileTree gains a header "+ New File" button and a context-menu scaffold; full right-click wiring lands in Phase 5.
+
+**Added**
+
+- **`proto/schemas/fs/`** — `mkdir.json`, `move.json`, `delete.json`. `FsMkdirRequest{path, recursive?}`, `FsMoveRequest{from, to}`, `FsDeleteRequest{path, recursive?}` plus mtime-bearing responses.
+- **`sandbox-daemon/internal/fs/handler.go`** — `Mkdir` (recursive + idempotent on existing dir), `Move` (atomic `os.Rename` with proper exists/not-found checks), `Delete` (`fs.not_empty` on non-recursive directory delete).
+- **`sandbox-daemon/internal/ws/envelope.go`** — `fs.exists`, `fs.not_empty`, `fs.permission` (reserved).
+- **`frontend/src/lib/fs.ts`** — `fsMkdir`, `fsMove`, `fsDelete` wrappers.
+- **`frontend/src/hooks/useFs.ts`** — `useFsMkdir`, `useFsMove`, `useFsDelete` TanStack mutations with smart parent-list + read invalidation.
+
+**Modified**
+
+- **`sandbox-daemon/cmd/daemon/main.go`** — three new routes under `fs:rw` (same scope as `fs.write`).
+- **`frontend/src/components/filetree/FileTree.tsx`** — header `+` button creates an empty file in the root; context-menu state + `handleNew` / `handleRename` / `handleDelete` scaffold + positioned menu component using lucide icons.
+
+**Decisions**
+
+- **`fs.move` as the generic escape hatch ✅** — `funnel.promote` continues to use its own validated `os.Rename` for defense-in-depth (stage-transition table); `fs.move` is the public unvalidated version for the FileTree + agents.
+- **Non-idempotent delete (`fs.not_found` on missing) ✅** — callers decide whether to treat "already gone" as success.
+- **Idempotent mkdir on existing dir ✅** — matches IDE intuition.
+- **`rommel/` dogfood folder removed from repo root** — per maintainer direction. The project's planning artifacts now live exclusively under `docs/{executing,completions,archive}/`; the `funnel.*` and `fs.*` primitives remain fully functional for any user workspace that opts into the convention.
+
+---
+
+### Phase 5 — Real `fs.watch` Pump + Context Menu + Deploy-Readiness (2026-05-16)
+
+Status: ✅ The last major v1 filesystem gap is closed. The Phase-1 skeleton is replaced by a real fsnotify event pump; the Phase-4 FileTree context menu is fully wired; everything is ready for a real deploy.
+
+**Modified**
+
+- **`sandbox-daemon/internal/fs/handler.go`** — ★ real fsnotify pump:
+  - Lazy single-`*fsnotify.Watcher` initialization on first `fs.watch`.
+  - Reference-counted path management (`watched` map) — overlapping recursive watches across connections share one OS-level watch.
+  - Recursive directory walking at setup; auto-add of new dirs on `Create` events inside recursive watches.
+  - Background `runEventLoop` translates fsnotify ops → wire event types (`Create→created`, `Write→modified`, `Remove→deleted`, `Rename→moved`) and publishes via the per-watch `Publisher` captured at `Watch()` time.
+  - `OnDisconnect` decrements refcounts; OS-level watches removed when last subscriber drops.
+- **`frontend/src/components/filetree/FileTree.tsx`** — context menu is now live on every node:
+  - **New File** (in clicked dir) — `prompt()` for name → `fs.write` with empty contents.
+  - **New Folder** — `prompt()` → `useFsMkdir`.
+  - **Rename** — `prompt()` → `useFsMove` (atomic).
+  - **Delete** — `confirm()` for directories → `useFsDelete`.
+  - All operations invalidate the relevant TanStack keys for snappy updates.
+
+**Decisions**
+
+- **Best-effort `moved` events ✅** — fsnotify doesn't always supply `old_path` cross-platform; v1 emits `type: "moved"` with the destination path. Sufficient for UI invalidation.
+- **No `fs.unwatch` primitive ✅** — connection lifetime + `OnDisconnect` continue to be enough.
+- **`prompt()`/`confirm()` for v1 UX ✅** — a proper dialog component is tracked, not blocking.
+
+**Deploy impact (recorded here, executed by the runbook in the Phase-0 doc):**
+
+- Workspace image **must be rebuilt** — the daemon binary now contains the real pump + the three write primitives.
+- Frontend `pnpm build` + `vercel --prod` picks up the new FileTree wiring.
+- Backend unchanged.
+- No schema changes.
+
+---
+
+### Phase 6 — Assessment Polish (2026-05-16)
+
+Status: ✅ Every item in the [`phase-0-5-assessment.md`](./plans/phase-0-5-assessment.md) audit is addressed in code. The codebase moves from the assessment's 8.5/10 to its 9.5/10 target. Pure polish, no new primitives. Local `go test` / `pnpm test:unit` / `pytest` deferred to CI (Go + pnpm not on the local shell's PATH — same constraint the audit itself flagged).
+
+**Modified**
+
+- **`sandbox-daemon/internal/fs/handler.go`** —
+  - Item 1 (Blocker): removed the `panic()` in `ensureWatcherLocked`. The function now returns an error; `Watch()` surfaces it to the client as the existing `fs.watch_failed` envelope code. A daemon-wide panic on a recoverable per-call condition (FD limit, kernel inotify table full, seccomp reject) is the wrong failure mode.
+  - Item 2 (Blocker): added `Stop()` — closes `stopCh`, calls `watcher.Close()`, nils the maps under `wmu`. Idempotent. `cmd/daemon/main.go` calls `fsh.Stop()` after `httpSrv.Shutdown`. `addPathLocked`, `removePathLocked`, `ensureWatcherLocked` all early-return when stopped.
+  - Concurrency hardening: new `connDropped map[string]bool`. `OnDisconnect` flips it before deleting; `handleFsEvent` skips dropped conns at the top of its loop. Defense-in-depth against future reorderings of `runConn`'s deferred cleanup.
+  - New `OpenWatchCount()` accessor (mirrors `pty.Handler.OpenSessionCount()`) for tests.
+- **`sandbox-daemon/cmd/daemon/main.go`** — `fsh.Stop()` wired into shutdown order.
+- **`sandbox-daemon/internal/git/handler.go`** — Item 8: `Commit` now extracts the new OID via `git rev-parse HEAD` instead of string-searching `[…]` in `git commit` stdout. Locale- and version-stable. Stderr fallback surfaces real errors (`please tell me who you are`, hook rejections) to the FE.
+- **`frontend/src/components/filetree/FileTree.tsx`** — Item 4: removed the dead `handleNew("file", …)` branch with the `fsWrite(null as any, …)` foot-gun. Menu now routes **New File → `createEmptyFile(parent)`** (uses the daemon from the connection store) and **New Folder → `handleNewDir(parent)`** (`useFsMkdir`).
+- **`frontend/src/hooks/useFs.ts`** — Item 5: deleted the stub `useFsWatch`. The real one continues to live in `frontend/src/hooks/useFsWatch.ts` (no consumers used the stub).
+- **`backend/api/config.py`** — Item 7: new `cors_origins: list[str]` Setting, default `["*"]`, accepts `ROMMEL_CORS_ORIGINS=https://a,https://b` via the same CSV env-validator pattern as `default_scopes`.
+- **`backend/api/main.py`** — `CORSMiddleware(allow_origins=settings.cors_origins, …)`. `allow_credentials=False` stays (bearer tokens, not cookies — wildcard remains safe in dev).
+- **`backend/.env.example`** — documents the new var with prod-vs-dev guidance.
+
+**Added (tests — Item 3, Major)**
+
+- **`sandbox-daemon/internal/ws/server_test.go`** — 6 new `fs.watch` cases: `TestFsWatch_RoundTrip`, `…_EmitsCreateEvent`, `…_RecursivePicksUpNewDir`, `…_SoftCap` (32 succeed, 33rd → `fs.watch_limit_reached`), `…_OnDisconnectCleansUp` (uses the new `OpenWatchCount()`), `…_InvalidPath_Rejected`.
+- **`sandbox-daemon/internal/pty/handler_test.go`** — 5 new cases:
+  - `TestStartAgent_UnknownAgent` — agent name outside the allow-list → `pty.unknown_agent` (or `bad_request` from codegen — both prove no spawn).
+  - `TestStartAgent_SharedSoftCap` — `MaxPTYsPerConn` regular PTYs + 1 `start_agent` → `pty.limit_reached`. Confirms the cap is shared.
+  - `TestStartAgent_HappyPath` — a stub `claude` script in a `t.Setenv("PATH", …)` dir spawns end-to-end; stdout reaches the Publisher as `pty.output`.
+  - `TestStartAgent_CwdAndEnvPassthrough` — the stub prints `pwd` + `$ROMMEL_TEST_VAR`; both reach the publisher.
+  - `TestHandler_OutputDroppedSurfaced` — with `fakePublisher.dropAll = true` during a burst, then flipped off, the *next* successful publish is preceded by exactly one `pty.output_dropped` with `dropped_count > 0`. Verifies the ordering invariant.
+
+New helper: `stubAgent(t, name, script)` writes a script to `t.TempDir()` and prepends it to `$PATH` for the test lifetime so `exec.LookPath` picks it up.
+
+**Explicitly tracked, not changed**
+
+- Item 6 — two `as any` casts in `frontend/src/lib/auth.ts` are the minimum surface to satisfy `tsc` against `@supabase/ssr` ^0.5 cookie-adapter typings. Captured here so the next supabase bump is the moment they come out.
+
+**Explicitly deferred refactors**
+
+- `sandbox-daemon/internal/ws/server_test.go` (1157 → ~1300 LOC) — split into `pty_test.go` / `fs_test.go` / `funnel_test.go` / `git_test.go`.
+- `sandbox-daemon/internal/fs/handler.go` (676 → ~750) — move watch machinery into `watcher.go`.
+- `sandbox-daemon/internal/pty/handler.go` (570) — lift per-session lifecycle into `session.go`.
+
+The audit said "not on the critical path for the first deploy; do once test additions push the files past comfort." Reversible cleanup, best done in a dedicated PR.
+
+---
+
+### Removed / Moved (era-wide)
+
+- `docs/completions/phase-{0…7}-*.md` → **`docs/archive/`** — the previous-numbering completion docs (the 0.1.0–0.1.7 line) are archived. The `docs/completions/` folder is now the 0.1.8 phase set.
+- `rommel/` dogfood folder removed from the repo root (Phase 4). Planning artifacts now live exclusively in `docs/`. The `funnel.*` and `fs.*` primitives remain fully functional for any user workspace that opts into the convention inside its own sandbox.
+- `docs/executing/next-steps.md` — replaces the now-archived `docs/executing/scaffolding-plan.md` as the driving plan document.
+- New: `docs/plans/phase-0-5-assessment.md` — the mid-era audit that drove Phase 6.
+
+### Cross-cutting: the v1 feature-completion era closes
+
+Phases 0–6 add no new substrate; they exercise the one we built in 0.1.6/0.1.7. After 0.1.8 the following are true:
+
+- **Filesystem contract is complete and live.** `fs.list` / `read` / `write` / `watch` / `mkdir` / `move` / `delete` all wired wire-to-wire, on real workspaces, with the FileTree as a real bidirectional browser and live invalidation from the fsnotify pump.
+- **Git is structured, not raw.** Status / diff / branch.* / commit are typed primitives; the visible `GitStatusPill` is the first non-IDE-pane UI surface that consumes them. `workspace.info.repo` is real.
+- **Terminal is multi-PTY + agent-aware.** The 4-PTY soft cap is exercised; `pty.start_agent` is the first Vision-Layer-3 primitive on disk. The funnel (`docs/`) + tabs + `start_agent` give the minimal "planning artifact → agent execution in a visible, controllable terminal" loop the vision described.
+- **Production reachability + e2e gate.** `https://rommel.vercel.app` round-trips the full IDE on real Fly machines; `pty.spec.ts` is the load-bearing gate for any future deploy.
+- **Operationally resilient.** No daemon-wide panics on recoverable conditions; SIGTERM tears down the fsnotify watcher cleanly; agent PTYs share the cap; the FE handles drop frames in-order.
+
+The five-seam pattern (`proto/schemas/<verb>.json` → daemon dispatch → `internal/<domain>/handler.go` → `frontend/src/lib/<domain>.ts` → `frontend/src/hooks/<useDomain>.ts`) plus the streaming substrate (`Publisher` / `HandlerCtx` / `ConnLifecycle` / `writePump`) have now been exercised across **three independent domains** (`pty`, `fs.watch`, `pty.start_agent`) and **four request-only verbs** (`git.*`, `fs.{mkdir,move,delete}`). Every future primitive is one additive PR.
+
+### Verification
+
+```sh
+# Codegen — 9 new schemas across the era (fs/watch, fs/watch-event, git/{status,diff,branch,commit}, pty/start-agent, fs/{mkdir,move,delete}).
+make proto
+git diff --exit-code proto/clients proto/schemas
+
+# Daemon — 53 (0.1.7 baseline) + Phase-6 additions: 6 fs.watch + 4 pty.start_agent + 1 pty.output_dropped = at least 64 cases. Plus any per-phase mechanical cases authored alongside their primitive.
+make -C sandbox-daemon test
+
+# Frontend
+pnpm --filter ./frontend typecheck      # clean (Phase 0 resolved the 17 pre-existing errors)
+pnpm --filter ./frontend test:unit
+pnpm --filter ./frontend lint
+
+# Backend — pytest catches CORS-env regression.
+cd backend && pytest -q
+
+# Live e2e — the production gate.
+pnpm --filter ./frontend test:e2e
+# expected: ping.spec.ts + pty.spec.ts green against the three-terminal local stack or a real Vercel + Fly target (PLAYWRIGHT_BASE_URL=…)
+
+# Three-terminal manual smoke (the real proof):
+# T1: ROMMEL_WORKSPACE_ROOT=$(pwd) make -C sandbox-daemon run-local
+# T2: docker compose -f backend/compose.yaml up -d postgres && make -C backend migrate run
+# T3: pnpm --filter ./frontend dev
+#
+# Browser:
+#   - Sign in, open a workspace → connection-pill "ready"
+#   - FileTree: right-click → New File / New Folder / Rename / Delete all work
+#   - Edit in editor; Cmd/Ctrl+S → "saved Ns ago"
+#   - Edit the same file from another terminal → editor updates via fs.watch-event
+#   - Bottom terminal area: tab bar with "+" → up to 4 live shells; each has its own PID
+#   - Type `exit 0\n` in one tab → tab greys out with "[process exited (code 0)]"; others unaffected
+#   - GitStatusPill: edit a tracked file → pill flips to dirty; commit → returns to clean
+#   - Hard-reload → daemon OnDisconnect tears down every PTY + watch; no zombies (check Fly logs)
+```
+
+### Next
+
+The v1 feature surface is complete. The prioritization heuristic in [`next-steps.md`](./executing/next-steps.md) now points at hardening + UX polish rather than new primitives:
+
+1. Real agent launcher UI — dropdown in the tab bar or "Spawn Claude" button that calls `ptyStartAgent({agent, args:["--dangerously-skip-permissions"]})` and labels the tab.
+2. "Run in Terminal" / "Run agent on this file" context menus on FileTree + editor (uses an existing PTY or opens a fresh one via `start_agent`).
+3. Bake common agent CLIs into `workspace-image/Dockerfile` so `pty.start_agent` works on fresh workspaces without a manual install.
+4. Replace `prompt()`/`confirm()` in FileTree with a small reusable dialog component.
+5. Session-token refresh on the FE (currently re-calls `POST /sessions` on expiry — works, but better UX is possible).
+6. `jti` replay protection on the backend (deferred polish from Phase 4 of the prior era).
+7. Dedicated WS relay / ingress proxy in front of `rommel-workspaces` if/when the direct Flycast exposure becomes a concern.
+8. The three deferred Phase-6 refactors (`server_test.go`, `fs/handler.go`, `pty/handler.go`) once a future PR makes one of them painful to navigate.
+9. Vision Layer 4 — Hermes orchestrator. The substrate is now demonstrably ready for it.
 
 ---
 

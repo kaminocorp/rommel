@@ -13,9 +13,10 @@ export class ApiError extends Error {
   }
 }
 
-export type ApiInit = Omit<RequestInit, "headers"> & {
+export type ApiInit = Omit<RequestInit, "headers" | "body"> & {
   token?: string | null;
   headers?: Record<string, string>;
+  body?: BodyInit | null;
 };
 
 export async function api<T>(path: string, init: ApiInit = {}): Promise<T> {
@@ -27,9 +28,9 @@ export async function api<T>(path: string, init: ApiInit = {}): Promise<T> {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
-    body,
+    body: body ?? undefined,
     cache: "no-store",
-  });
+  } as RequestInit);
   if (!res.ok) {
     throw new ApiError(res.status, await res.text());
   }

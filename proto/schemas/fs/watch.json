@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/watch.json",
+  "title": "FsWatch",
+  "description": "fs.watch — start a filesystem watch on a workspace-relative path. Returns an ack; subsequent changes under the watched subtree are delivered as server-pushed fs.watch-event envelopes (one event per change). The watch is tied to the connection that issued the request; it is automatically torn down on disconnect (or when the client sends an explicit fs.unwatch in a future revision). Recursive watches walk the directory tree at setup time and re-add new subdirectories as they appear.",
+  "$defs": {
+    "FsWatchRequest": {
+      "title": "FsWatchRequest",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative directory or file path to watch. '.' watches the workspace root. Daemon rejects absolute paths and escapes. For files, the parent directory is watched (so the file's own create/modify/delete is visible)."
+        },
+        "recursive": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, watch all existing subdirectories at setup time and automatically track new directories created under the watched tree. When false, only the immediate children of the target path generate events."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsWatchResponse": {
+      "title": "FsWatchResponse",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Echo of the normalized request path that is now being watched."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FsWatchRequest" },
+    { "$ref": "#/$defs/FsWatchResponse" }
+  ]
+}

@@ -2,12 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://rommel.dev/schemas/fs/watch-event.json",
   "title": "FsWatchEvent",
-  "description": "fs.watch — server-pushed event for filesystem changes (created/modified/deleted/moved). Stub.",
+  "description": "fs.watch-event — server-pushed event emitted when a file or directory under an active fs.watch subscription changes. 'type' is the high-level operation; 'moved' populates 'old_path' with the previous location. Events are best-effort (subject to the per-connection drop-oldest backpressure in the write pump). The daemon coalesces rapid successive changes on the same path where possible.",
   "type": "object",
+  "required": ["path", "type"],
   "properties": {
-    "_todo": {
+    "path": {
       "type": "string",
-      "const": "Define FsWatchEvent body when implementing fs.watch."
+      "description": "Workspace-relative path of the file or directory that changed."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["created", "modified", "deleted", "moved"],
+      "description": "High-level change kind. 'modified' covers content changes and metadata (chmod, truncate). 'moved' is emitted for rename(2) within the watched tree."
+    },
+    "old_path": {
+      "type": "string",
+      "description": "For 'moved' events only: the previous workspace-relative path before the rename."
     }
-  }
+  },
+  "additionalProperties": false
 }

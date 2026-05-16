@@ -34,10 +34,41 @@ primary_region = "iad"
   # (Decision 0.4). ROMMEL_WID and any per-machine overrides are injected by
   # the backend via the Machines API.
 
-# Internal port the daemon listens on. Declaring this without [[services]]
-# means the port is reachable inside Fly's private network only.
+# Internal port the daemon listens on.
 [experimental]
   internal_port = 7777
+
+# Phase 0 production cutover: public WSS reachability via Flycast.
+# For the initial deploy we map a public hostname (e.g. workspaces.rommel.dev
+# or daemon.rommel.dev) to this app and add a TCP service with TLS handler.
+# The browser then receives daemon URLs like:
+#   wss://{wid}.workspaces.rommel.dev/ws?token=...
+# (or the exact per-machine / wildcard shape Fly provisions).
+#
+# This accepts the "direct exposure" trade-off for v1 speed (the original
+# Phase 3 decision kept [[services]] absent for defense-in-depth). The real
+# gate remains the short-lived EdDSA token + per-wid claim + scope enforcement
+# inside the daemon. A later dedicated relay proxy (inside rommel-backend or
+# a separate lightweight ingress) can be added if tighter isolation is required.
+#
+# Example service block (add via fly.toml or `fly services` / console):
+#
+# [[services]]
+#   protocol = "tcp"
+#   internal_port = 7777
+#   # Fly edge terminates TLS for wss://
+#   [[services.ports]]
+#     port = 443
+#     handlers = ["tls"]
+#   [[services.concurrency]]
+#     type = "connections"
+#     soft_limit = 50
+#     hard_limit = 100
+#
+# After adding the service + custom domain + DNS, set the backend secret:
+#   ROMMEL_DAEMON_URL_TEMPLATE="wss://{wid}.workspaces.rommel.dev/ws"
+#
+# The template is already fully dynamic; no code change was required.
 
 [[restart]]
   policy = "on-failure"

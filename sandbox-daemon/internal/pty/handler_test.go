@@ -3,6 +3,8 @@ package pty
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -237,4 +239,221 @@ func TestHandler_OnDisconnectSparesOtherConns(t *testing.T) {
 	if got := h.OpenSessionCount(); got != 1 {
 		t.Fatalf("after OnDisconnect: %d sessions left, want 1", got)
 	}
+}
+
+// --- pty.output_dropped (Phase 6 polish) ------------------------------------
+
+// TestHandler_OutputDroppedSurfaced verifies the per-session drop counter
+// surfaces a pty.output_dropped event on the next successful publish after
+// the pump had dropped frames.
+//
+// Setup: fakePublisher.dropAll flips Publish to a no-op that returns false,
+// the same signal connPublisher returns when the pump's drop-oldest path
+// gives up. Drive output, observe drops, flip dropAll back, drive more
+// output → the next pty.output is preceded by exactly one pty.output_dropped
+// with dropped_count > 0.
+func TestHandler_OutputDroppedSurfaced(t *testing.T) {
+	h := New(t.TempDir())
+	pub := &fakePublisher{}
+	// Start in drop-everything mode so the shell's startup output is dropped.
+	pub.dropAll.Store(true)
+
+	id := mustOpen(t, h, pub, "c", 80, 24)
+
+	// Drive an initial output burst that the pub drops.
+	driveIn := func(line string) {
+		t.Helper()
+		req, _ := json.Marshal(map[string]any{
+			"pty_id": id,
+			"data":   base64.StdEncoding.EncodeToString([]byte(line)),
+		})
+		if _, errBody := h.Input(ws.HandlerCtx{ConnID: "c", Publisher: pub}, req); errBody != nil {
+			t.Fatalf("input: %+v", errBody)
+		}
+	}
+	driveIn("printf 'first-batch\\n'\n")
+
+	// Give the outputLoop time to read + try-publish the dropped frames.
+	time.Sleep(200 * time.Millisecond)
+
+	// Flip the publisher back on. The next read in outputLoop will see
+	// droppedSinceFlush > 0 and emit pty.output_dropped before pty.output.
+	pub.dropAll.Store(false)
+	driveIn("printf 'second-batch\\n'\nexit 0\n")
+	_ = pub.waitFor(t, "pty.exit", 5*time.Second)
+
+	var sawDropped bool
+	var sawDroppedBeforeOutput bool
+	for _, e := range pub.snapshot() {
+		switch e.typ {
+		case "pty.output_dropped":
+			sawDropped = true
+			var od struct {
+				PtyID        string `json:"pty_id"`
+				DroppedCount int    `json:"dropped_count"`
+			}
+			if json.Unmarshal(e.payload, &od) != nil || od.DroppedCount <= 0 {
+				t.Fatalf("output_dropped malformed or count<=0: %s", string(e.payload))
+			}
+			if od.PtyID != id {
+				t.Fatalf("output_dropped pty_id: got %q want %q", od.PtyID, id)
+			}
+		case "pty.output":
+			if sawDropped {
+				sawDroppedBeforeOutput = true
+			}
+		}
+	}
+	if !sawDropped {
+		t.Fatalf("never saw pty.output_dropped after re-enabling publisher")
+	}
+	if !sawDroppedBeforeOutput {
+		t.Fatalf("pty.output_dropped emitted but not before any pty.output — ordering invariant broken")
+	}
+}
+
+// --- pty.start_agent (Phase 3) ----------------------------------------------
+
+func TestStartAgent_UnknownAgent(t *testing.T) {
+	h := New(t.TempDir())
+	pub := &fakePublisher{}
+	req, _ := json.Marshal(map[string]any{"agent": "not-an-agent"})
+	_, errBody := h.StartAgent(ws.HandlerCtx{ConnID: "c", Publisher: pub}, req)
+	if errBody == nil {
+		t.Fatalf("expected error")
+	}
+	// Codegen rejects out-of-enum values with bad_request; if the enum is
+	// loosened in the future the handler-level pty.unknown_agent kicks in.
+	if errBody.Code != ws.ErrCodePtyUnknownAgent && errBody.Code != ws.ErrCodeBadRequest {
+		t.Fatalf("code: got %+v want pty.unknown_agent or bad_request", errBody)
+	}
+}
+
+func TestStartAgent_SharedSoftCap(t *testing.T) {
+	h := New(t.TempDir())
+	pub := &fakePublisher{}
+	for i := 0; i < MaxPTYsPerConn; i++ {
+		mustOpen(t, h, pub, "connA", 80, 24)
+	}
+	// Stub a claude binary so we'd actually attempt to exec it if the cap
+	// check were missing — that way a regression that drops the cap check
+	// shows up as "spawned a 5th process" rather than "the test passes by
+	// accident because exec failed".
+	stubAgent(t, "claude", `#!/bin/sh
+exit 0
+`)
+	req, _ := json.Marshal(map[string]any{"agent": "claude"})
+	_, errBody := h.StartAgent(ws.HandlerCtx{ConnID: "connA", Publisher: pub}, req)
+	if errBody == nil || errBody.Code != ws.ErrCodePtyLimitReached {
+		t.Fatalf("expected pty.limit_reached, got %+v", errBody)
+	}
+}
+
+func TestStartAgent_HappyPath(t *testing.T) {
+	h := New(t.TempDir())
+	pub := &fakePublisher{}
+	stubAgent(t, "claude", `#!/bin/sh
+printf 'agent-up\n'
+exit 0
+`)
+	req, _ := json.Marshal(map[string]any{"agent": "claude"})
+	resp, errBody := h.StartAgent(ws.HandlerCtx{ConnID: "c", Publisher: pub}, req)
+	if errBody != nil {
+		t.Fatalf("start_agent: %+v", errBody)
+	}
+	var out struct {
+		PtyID string `json:"pty_id"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.PtyID == "" {
+		t.Fatalf("empty pty_id")
+	}
+
+	_ = pub.waitFor(t, "pty.exit", 5*time.Second)
+	var combined strings.Builder
+	for _, e := range pub.snapshot() {
+		if e.typ != "pty.output" {
+			continue
+		}
+		var oe struct {
+			Data string `json:"data"`
+		}
+		if json.Unmarshal(e.payload, &oe) != nil {
+			continue
+		}
+		b, err := base64.StdEncoding.DecodeString(oe.Data)
+		if err == nil {
+			combined.Write(b)
+		}
+	}
+	if !strings.Contains(combined.String(), "agent-up") {
+		t.Fatalf("agent output never reached publisher; saw %q", combined.String())
+	}
+}
+
+func TestStartAgent_CwdAndEnvPassthrough(t *testing.T) {
+	root := t.TempDir()
+	h := New(root)
+	pub := &fakePublisher{}
+
+	// Stub agent prints the cwd path and one env var so the test can grep both.
+	stubAgent(t, "claude", `#!/bin/sh
+printf 'CWD=%s ROMMEL_TEST_VAR=%s\n' "$(pwd)" "$ROMMEL_TEST_VAR"
+exit 0
+`)
+
+	// Pre-create the sub-workspace dir so the cwd sandbox succeeds.
+	if err := os.Mkdir(filepath.Join(root, "subdir"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	req, _ := json.Marshal(map[string]any{
+		"agent": "claude",
+		"cwd":   "subdir",
+		"env":   map[string]string{"ROMMEL_TEST_VAR": "hello-rommel"},
+	})
+	_, errBody := h.StartAgent(ws.HandlerCtx{ConnID: "c", Publisher: pub}, req)
+	if errBody != nil {
+		t.Fatalf("start_agent: %+v", errBody)
+	}
+	_ = pub.waitFor(t, "pty.exit", 5*time.Second)
+
+	var combined strings.Builder
+	for _, e := range pub.snapshot() {
+		if e.typ != "pty.output" {
+			continue
+		}
+		var oe struct {
+			Data string `json:"data"`
+		}
+		if json.Unmarshal(e.payload, &oe) != nil {
+			continue
+		}
+		if b, err := base64.StdEncoding.DecodeString(oe.Data); err == nil {
+			combined.Write(b)
+		}
+	}
+	out := combined.String()
+	if !strings.Contains(out, "ROMMEL_TEST_VAR=hello-rommel") {
+		t.Fatalf("env not propagated: %q", out)
+	}
+	if !strings.Contains(out, "subdir") {
+		t.Fatalf("cwd not honored (no /subdir in output): %q", out)
+	}
+}
+
+// stubAgent writes a tiny shell script named `name` into a t.TempDir() and
+// prepends that dir onto $PATH for the lifetime of the test. Used by the
+// pty.start_agent tests so we can prove the handler execs the named binary
+// without requiring the real agent CLI to be installed.
+func stubAgent(t *testing.T, name, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

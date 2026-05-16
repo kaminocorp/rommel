@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/fs/delete.json",
+  "title": "FsDelete",
+  "description": "fs.delete — remove a file or directory. When recursive=false (default) on a directory that contains children, the operation fails with fs.not_empty. When recursive=true, the directory and all its contents are removed (rm -rf semantics). Deleting a non-existent path returns fs.not_found so callers can distinguish 'already gone' from success.",
+  "$defs": {
+    "FsDeleteRequest": {
+      "title": "FsDeleteRequest",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative path to delete (file or directory)."
+        },
+        "recursive": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true and path is a directory, delete the entire subtree."
+        }
+      },
+      "additionalProperties": false
+    },
+    "FsDeleteResponse": {
+      "title": "FsDeleteResponse",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path that was deleted (echo of request)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/FsDeleteRequest" },
+    { "$ref": "#/$defs/FsDeleteResponse" }
+  ]
+}

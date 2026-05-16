@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/git/diff.json",
+  "title": "GitDiff",
+  "description": "git.diff — returns a unified diff for the given path (or the whole repository if omitted). The diff is returned as a plain string so the frontend can render it with a diff viewer or feed it to Monaco.",
+  "$defs": {
+    "GitDiffRequest": {
+      "title": "GitDiffRequest",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Optional path to diff. If omitted, diffs the entire working tree."
+        },
+        "staged": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, show the staged diff (index vs HEAD) instead of working tree vs index."
+        }
+      },
+      "additionalProperties": false
+    },
+    "GitDiffResponse": {
+      "title": "GitDiffResponse",
+      "type": "object",
+      "required": ["diff"],
+      "properties": {
+        "diff": {
+          "type": "string",
+          "description": "Unified diff output (no color)."
+        },
+        "path": {
+          "type": "string",
+          "description": "The path that was diffed (echoed back)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/GitDiffRequest" },
+    { "$ref": "#/$defs/GitDiffResponse" }
+  ]
+}

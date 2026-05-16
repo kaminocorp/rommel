@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/git/branch.json",
+  "title": "GitBranch",
+  "description": "git.branch.* primitives for listing, creating, and switching branches.",
+  "$defs": {
+    "GitBranchListRequest": {
+      "title": "GitBranchListRequest",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GitBranchListResponse": {
+      "title": "GitBranchListResponse",
+      "type": "object",
+      "required": ["branches", "current"],
+      "properties": {
+        "current": { "type": "string" },
+        "branches": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "GitBranchCreateRequest": {
+      "title": "GitBranchCreateRequest",
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "checkout": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, switch to the new branch after creating it."
+        }
+      },
+      "additionalProperties": false
+    },
+    "GitBranchCreateResponse": {
+      "title": "GitBranchCreateResponse",
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "GitBranchSwitchRequest": {
+      "title": "GitBranchSwitchRequest",
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "GitBranchSwitchResponse": {
+      "title": "GitBranchSwitchResponse",
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/GitBranchListRequest" },
+    { "$ref": "#/$defs/GitBranchListResponse" },
+    { "$ref": "#/$defs/GitBranchCreateRequest" },
+    { "$ref": "#/$defs/GitBranchCreateResponse" },
+    { "$ref": "#/$defs/GitBranchSwitchRequest" },
+    { "$ref": "#/$defs/GitBranchSwitchResponse" }
+  ]
+}

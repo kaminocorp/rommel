@@ -15,7 +15,8 @@ daemon validates.
 
 The signer/verifier pair is the entire Pattern-B auth loop: the backend mints
 a short-lived JWT, the browser opens a WS straight to the workspace daemon at
-`wss://<wid>.vm.rommel-workspaces.internal:7777/ws?token=...`, and the daemon
+`wss://{wid}.workspaces.rommel.dev/ws?token=...` (Phase 0 Flycast public mapping)
+or the internal `.internal` form in dev, and the daemon
 either accepts or rejects without consulting the backend.
 
 ## Layout
@@ -91,7 +92,7 @@ fly secrets set \
   ROMMEL_DATABASE_URL="$SUPABASE_URL" \
   ROMMEL_DATABASE_MIGRATE_URL="$SUPABASE_MIGRATE_URL" \
   ROMMEL_SUPABASE_JWKS_URL="$SUPABASE_JWKS" \
-  ROMMEL_DAEMON_URL_TEMPLATE="wss://{wid}.vm.rommel-workspaces.internal:7777/ws" \
+  ROMMEL_DAEMON_URL_TEMPLATE="wss://{wid}.workspaces.rommel.dev/ws" \   # Phase 0 Flycast shape
   ROMMEL_FLY_API_TOKEN="$FLY_API_TOKEN"
 
 fly deploy                                        # release_command runs `alembic upgrade head`

@@ -6,10 +6,18 @@
 // Phase 6 — fs.read / fs.list / fs.write.
 
 import type {
+  FsDeleteRequest,
+  FsDeleteResponse,
   FsListRequest,
   FsListResponse,
+  FsMkdirRequest,
+  FsMkdirResponse,
+  FsMoveRequest,
+  FsMoveResponse,
   FsReadRequest,
   FsReadResponse,
+  FsWatchRequest,
+  FsWatchResponse,
   FsWriteRequest,
   FsWriteResponse,
 } from "@rommel/proto";
@@ -34,4 +42,40 @@ export async function fsWrite(
   encoding: FsWriteRequest["encoding"] = "utf-8",
 ): Promise<FsWriteResponse> {
   return conn.rpc<FsWriteRequest, FsWriteResponse>("fs.write", { path, contents, encoding });
+}
+
+// fsWatch starts a server-pushed watch on the given path. The caller must
+// subsequently call conn.subscribe("fs.watch-event", handler) to receive
+// FsWatchEvent payloads. The watch is automatically cleaned up when the
+// connection drops (daemon-side OnDisconnect).
+export async function fsWatch(
+  conn: DaemonConnection,
+  path: string,
+  recursive: FsWatchRequest["recursive"] = false,
+): Promise<FsWatchResponse> {
+  return conn.rpc<FsWatchRequest, FsWatchResponse>("fs.watch", { path, recursive });
+}
+
+export async function fsMkdir(
+  conn: DaemonConnection,
+  path: string,
+  recursive = false,
+): Promise<FsMkdirResponse> {
+  return conn.rpc<FsMkdirRequest, FsMkdirResponse>("fs.mkdir", { path, recursive });
+}
+
+export async function fsMove(
+  conn: DaemonConnection,
+  fromPath: string,
+  toPath: string,
+): Promise<FsMoveResponse> {
+  return conn.rpc<FsMoveRequest, FsMoveResponse>("fs.move", { from: fromPath, to: toPath });
+}
+
+export async function fsDelete(
+  conn: DaemonConnection,
+  path: string,
+  recursive = false,
+): Promise<FsDeleteResponse> {
+  return conn.rpc<FsDeleteRequest, FsDeleteResponse>("fs.delete", { path, recursive });
 }

@@ -91,10 +91,20 @@ class Settings(BaseSettings):
         "Daemon enforces per-primitive — this is just the v1 default bundle.",
     )
 
-    @field_validator("default_scopes", mode="before")
+    # --- CORS ---------------------------------------------------------------
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["*"],
+        description="Allowed CORS origins for the API. Default is '*' for dev; "
+        "production must set this to the exact frontend origin(s) (e.g. "
+        "'https://rommel.dev'). Comma-separated values are accepted from the "
+        "environment via ROMMEL_CORS_ORIGINS.",
+    )
+
+    @field_validator("default_scopes", "cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
-        # Allow `ROMMEL_DEFAULT_SCOPES=fs:rw,pty:rw` (env-friendly) in addition
+        # Allow `ROMMEL_DEFAULT_SCOPES=fs:rw,pty:rw` or
+        # `ROMMEL_CORS_ORIGINS=https://a,https://b` (env-friendly) in addition
         # to a real list (e.g. from a model_copy override in tests).
         if isinstance(v, str):
             return [s.strip() for s in v.split(",") if s.strip()]

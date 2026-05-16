@@ -25,6 +25,7 @@ import (
 	"github.com/rommel-ade/rommel/sandbox-daemon/internal/config"
 	fsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/fs"
 	funnelx "github.com/rommel-ade/rommel/sandbox-daemon/internal/funnel"
+	gitx "github.com/rommel-ade/rommel/sandbox-daemon/internal/git"
 	ptyx "github.com/rommel-ade/rommel/sandbox-daemon/internal/pty"
 	wsx "github.com/rommel-ade/rommel/sandbox-daemon/internal/ws"
 	wsinfo "github.com/rommel-ade/rommel/sandbox-daemon/internal/workspace"
@@ -37,7 +38,10 @@ func main() {
 	}
 
 	ptyh := ptyx.New(cfg.WorkspaceRoot)
-	srv := wsx.NewServer(cfg, buildRoutes(cfg, ptyh)).WithLifecycle(ptyh)
+	fsh := &fsx.Handler{Root: cfg.WorkspaceRoot}
+	srv := wsx.NewServer(cfg, buildRoutes(cfg, ptyh, fsh)).
+		WithLifecycle(ptyh).
+		WithLifecycle(fsh) // Phase 1: fs.watch needs OnDisconnect cleanup
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.HandleHealth)
@@ -69,15 +73,19 @@ func main() {
 		log.Printf("daemon: shutdown: %v", err)
 		os.Exit(1)
 	}
+
+	// Release the fs.watch fsnotify.Watcher + its event-loop goroutine.
+	// HTTP-level shutdown drains in-flight connections; this cleans up the
+	// process-wide resources those connections may have allocated.
+	fsh.Stop()
 }
 
 // buildRoutes assembles the primitive → handler map. Required scopes mirror
 // the session-token.json enum: fs:r grants read-only fs.*; fs:rw grants both;
-// pty:rw is the only pty scope (read/write is inherent to a PTY); funnel:r /
-// funnel:rw scope the planning-funnel verbs.
-func buildRoutes(cfg *config.Config, ptyh *ptyx.Handler) map[string]wsx.Route {
-	fsh := &fsx.Handler{Root: cfg.WorkspaceRoot}
+// pty:rw is the only pty scope; funnel:r/rw and git:r/rw follow the same pattern.
+func buildRoutes(cfg *config.Config, ptyh *ptyx.Handler, fsh *fsx.Handler) map[string]wsx.Route {
 	funh := &funnelx.Handler{Root: filepath.Join(cfg.WorkspaceRoot, "rommel")}
+	gith := &gitx.Handler{Root: cfg.WorkspaceRoot}
 	info := &wsinfo.InfoHandler{WID: cfg.WID}
 
 	fsR := []protogen.SessionTokenClaimsScopeElem{
@@ -98,6 +106,14 @@ func buildRoutes(cfg *config.Config, ptyh *ptyx.Handler) map[string]wsx.Route {
 		protogen.SessionTokenClaimsScopeElemFunnelRw,
 	}
 
+	gitR := []protogen.SessionTokenClaimsScopeElem{
+		protogen.SessionTokenClaimsScopeElemGitR,
+		protogen.SessionTokenClaimsScopeElemGitRw,
+	}
+	gitRw := []protogen.SessionTokenClaimsScopeElem{
+		protogen.SessionTokenClaimsScopeElemGitRw,
+	}
+
 	return map[string]wsx.Route{
 		// system.* — daemon-level. No scope required: a valid token implies
 		// the right to ping the daemon you connected to.
@@ -113,11 +129,16 @@ func buildRoutes(cfg *config.Config, ptyh *ptyx.Handler) map[string]wsx.Route {
 			return b, nil
 		}},
 
-		// fs.* — sandboxed under workspace root. read/list/write real; watch stubbed.
-		"fs.read":  {RequiredScope: fsR, Fn: fsh.Read},
-		"fs.list":  {RequiredScope: fsR, Fn: fsh.List},
-		"fs.write": {RequiredScope: fsRw, Fn: fsh.Write},
-		"fs.watch": {RequiredScope: fsR, Fn: fsh.NotImplemented("fs.watch")},
+		// fs.* — sandboxed under workspace root. Phase 1 added real fs.watch
+		// (streaming via Publisher + ConnLifecycle cleanup). Phase 4 completed
+		// the write side with mkdir / move / delete.
+		"fs.read":   {RequiredScope: fsR, Fn: fsh.Read},
+		"fs.list":   {RequiredScope: fsR, Fn: fsh.List},
+		"fs.write":  {RequiredScope: fsRw, Fn: fsh.Write},
+		"fs.watch":  {RequiredScope: fsR, Fn: fsh.Watch},
+		"fs.mkdir":  {RequiredScope: fsRw, Fn: fsh.Mkdir},
+		"fs.move":   {RequiredScope: fsRw, Fn: fsh.Move},
+		"fs.delete": {RequiredScope: fsRw, Fn: fsh.Delete},
 
 		// funnel.* — sandboxed under <WorkspaceRoot>/rommel/.
 		"funnel.list":    {RequiredScope: funnelR, Fn: funh.List},
@@ -125,10 +146,19 @@ func buildRoutes(cfg *config.Config, ptyh *ptyx.Handler) map[string]wsx.Route {
 		"funnel.promote": {RequiredScope: funnelRw, Fn: funh.Promote},
 
 		// pty.* — real as of Phase 7.
-		"pty.open":   {RequiredScope: ptyRw, Fn: ptyh.Open},
-		"pty.input":  {RequiredScope: ptyRw, Fn: ptyh.Input},
-		"pty.resize": {RequiredScope: ptyRw, Fn: ptyh.Resize},
-		"pty.close":  {RequiredScope: ptyRw, Fn: ptyh.Close},
+		"pty.open":        {RequiredScope: ptyRw, Fn: ptyh.Open},
+		"pty.input":       {RequiredScope: ptyRw, Fn: ptyh.Input},
+		"pty.resize":      {RequiredScope: ptyRw, Fn: ptyh.Resize},
+		"pty.close":       {RequiredScope: ptyRw, Fn: ptyh.Close},
+		"pty.start_agent": {RequiredScope: ptyRw, Fn: ptyh.StartAgent}, // Phase 3
+
+		// git.* — Phase 2 structured git primitives.
+		"git.status":       {RequiredScope: gitR, Fn: gith.Status},
+		"git.diff":         {RequiredScope: gitR, Fn: gith.Diff},
+		"git.branch.list":   {RequiredScope: gitR, Fn: gith.BranchList},
+		"git.branch.create": {RequiredScope: gitRw, Fn: gith.BranchCreate},
+		"git.branch.switch": {RequiredScope: gitRw, Fn: gith.BranchSwitch},
+		"git.commit":        {RequiredScope: gitRw, Fn: gith.Commit},
 	}
 }
 

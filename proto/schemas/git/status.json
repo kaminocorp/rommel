@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rommel.dev/schemas/git/status.json",
+  "title": "GitStatus",
+  "description": "git.status — structured repository status. Returns the current branch, tracking information, and lists of changed files. Designed to power a compact StatusBar pill as well as richer Git panels. The daemon shells out to `git` (porcelain v1 + --ahead-behind) and parses the result; no heavy git library dependency.",
+  "$defs": {
+    "GitStatusRequest": {
+      "title": "GitStatusRequest",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Optional subdirectory to scope the status to (defaults to workspace root). Useful for monorepos."
+        }
+      },
+      "additionalProperties": false
+    },
+    "GitFileChange": {
+      "title": "GitFileChange",
+      "type": "object",
+      "required": ["path", "status"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative path of the changed file."
+        },
+        "old_path": {
+          "type": "string",
+          "description": "For renamed files, the previous path."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["modified", "added", "deleted", "renamed", "copied", "untracked", "ignored", "conflicted"],
+          "description": "High-level status. 'modified' covers both staged and unstaged modifications."
+        },
+        "staged": {
+          "type": "boolean",
+          "description": "True if the change is staged (index differs from HEAD)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "GitStatusResponse": {
+      "title": "GitStatusResponse",
+      "type": "object",
+      "required": ["branch", "clean"],
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Current branch name (or 'HEAD' / detached SHA for detached HEAD state)."
+        },
+        "upstream": {
+          "type": "string",
+          "description": "Tracking branch name if set (e.g. 'origin/main')."
+        },
+        "ahead": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of commits this branch is ahead of upstream."
+        },
+        "behind": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of commits this branch is behind upstream."
+        },
+        "changes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/GitFileChange" },
+          "description": "All changes (staged + unstaged + untracked). Sorted by path."
+        },
+        "clean": {
+          "type": "boolean",
+          "description": "True when there are no changes of any kind (working tree clean)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/GitStatusRequest" },
+    { "$ref": "#/$defs/GitStatusResponse" },
+    { "$ref": "#/$defs/GitFileChange" }
+  ]
+}
